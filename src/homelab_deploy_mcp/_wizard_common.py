@@ -24,15 +24,29 @@ def prompt(message: str, *, default: str | None = None) -> str:
         print("  (required)")
 
 
-def prompt_int(message: str, *, default: int) -> int:
+def prompt_int(
+    message: str,
+    *,
+    default: int,
+    min_value: int | None = None,
+    max_value: int | None = None,
+) -> int:
     while True:
         raw = input(f"{message} [{default}]: ").strip()
         if not raw:
             return default
         try:
-            return int(raw)
+            value = int(raw)
         except ValueError:
             print("  enter a whole number")
+            continue
+        if min_value is not None and value < min_value:
+            print(f"  must be at least {min_value}")
+            continue
+        if max_value is not None and value > max_value:
+            print(f"  must be at most {max_value}")
+            continue
+        return value
 
 
 def prompt_yes_no(message: str, *, default: bool) -> bool:

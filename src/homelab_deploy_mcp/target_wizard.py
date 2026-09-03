@@ -20,6 +20,7 @@ at the cost of not preserving hand-added comments across runs.
 from __future__ import annotations
 
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -27,15 +28,56 @@ from pathlib import Path
 import yaml
 
 from ._wizard_common import prompt, prompt_list, prompt_optional, prompt_yes_no
-from .config import TARGET_NAME_RE
+from .config import BRANCH_PATTERN_RE, ENVFILE_NAME_RE, TARGET_NAME_RE
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_COMPOSE = REPO_ROOT / "deploy" / "docker-compose.example.yml"
+
+ENVFILE_NAME_HINT = "must end in .env with no path separators, e.g. prod.env"
+BRANCH_PATTERN_HINT = "letters/digits/_/./-  and * ? [ ] for glob patterns, no spaces or shell characters"
+
+# Same charset ACCOUNT_BRANCH_PATTERNS keys (Unix account names) are given
+# elsewhere in this project -- used only to sanity-check values preserved
+# from an existing targets.conf before re-emitting them as bash array
+# subscripts (see _render). This wizard never writes to this table itself.
+_ACCOUNT_KEY_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 _TARGET_DIR_RE = re.compile(r'^TARGET_DIR\[([a-z0-9_-]+)\]="(.*)"\s*$')
 _ALLOWED_BRANCHES_RE = re.compile(r'^ALLOWED_BRANCHES\[([a-z0-9_-]+)\]="(.*)"\s*$')
 _ALLOWED_ENV_FILES_RE = re.compile(r'^ALLOWED_ENV_FILES\[([a-z0-9_-]+)\]="(.*)"\s*$')
 _ACCOUNT_PATTERN_RE = re.compile(r'^ACCOUNT_BRANCH_PATTERNS\[([^\]]+)\]="(.*)"\s*$')
+
+
+def _bash_dquote(value: str) -> str:
+    """Escape `value` for interpolation inside a double-quoted bash string
+    (`KEY[name]="value"`). The round-trip format has to stay double-quoted
+    -- that's what _parse_existing's regexes above expect back out, and
+    what deploy-executor.sh's `source` step parses -- so this escapes for
+    that context rather than switching to shlex.quote()'s single-quoted
+    style. Backslash is escaped first so the later substitutions don't
+    double-escape the backslashes they themselves introduce. Without this,
+    a value containing `"`, `$(...)`, or backticks would be interpreted by
+    bash instead of taken literally when this file is sourced as root.
+    """
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("`", "\\`")
+
+
+def _bash_dunquote(value: str) -> str:
+    """Inverse of _bash_dquote, used by _parse_existing so a value that
+    round-trips through parse -> render (e.g. an untouched target carried
+    forward while another one is added) comes back out exactly as it went
+    in, instead of accumulating an extra backslash on every regeneration."""
+    result: list[str] = []
+    i = 0
+    while i < len(value):
+        c = value[i]
+        if c == "\\" and i + 1 < len(value) and value[i + 1] in "\\\"$`":
+            result.append(value[i + 1])
+            i += 2
+        else:
+            result.append(c)
+            i += 1
+    return "".join(result)
 
 
 def _parse_existing(path: Path) -> tuple[dict[str, dict[str, str]], dict[str, str]]:
@@ -49,13 +91,13 @@ def _parse_existing(path: Path) -> tuple[dict[str, dict[str, str]], dict[str, st
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if match := _TARGET_DIR_RE.match(stripped):
-            targets.setdefault(match.group(1), {})["dir"] = match.group(2)
+            targets.setdefault(match.group(1), {})["dir"] = _bash_dunquote(match.group(2))
         elif match := _ALLOWED_BRANCHES_RE.match(stripped):
-            targets.setdefault(match.group(1), {})["branches"] = match.group(2)
+            targets.setdefault(match.group(1), {})["branches"] = _bash_dunquote(match.group(2))
         elif match := _ALLOWED_ENV_FILES_RE.match(stripped):
-            targets.setdefault(match.group(1), {})["env_files"] = match.group(2)
+            targets.setdefault(match.group(1), {})["env_files"] = _bash_dunquote(match.group(2))
         elif match := _ACCOUNT_PATTERN_RE.match(stripped):
-            account_patterns[match.group(1)] = match.group(2)
+            account_patterns[match.group(1)] = _bash_dunquote(match.group(2))
     return targets, account_patterns
 
 
@@ -72,16 +114,23 @@ def _render(targets: dict[str, dict[str, str]], account_patterns: dict[str, str]
     ]
     for name in sorted(targets):
         entry = targets[name]
-        lines.append(f"TARGET_DIR[{name}]=\"{entry.get('dir', f'/opt/targets/{name}')}\"")
-        lines.append(f"ALLOWED_BRANCHES[{name}]=\"{entry.get('branches', '')}\"")
-        lines.append(f"ALLOWED_ENV_FILES[{name}]=\"{entry.get('env_files', '')}\"")
+        directory = entry.get("dir", f"/opt/targets/{name}")
+        lines.append(f'TARGET_DIR[{name}]="{_bash_dquote(directory)}"')
+        lines.append(f'ALLOWED_BRANCHES[{name}]="{_bash_dquote(entry.get("branches", ""))}"')
+        lines.append(f'ALLOWED_ENV_FILES[{name}]="{_bash_dquote(entry.get("env_files", ""))}"')
         lines.append("")
 
     if account_patterns:
         lines.append("# Preserved from the existing file -- this wizard doesn't manage these.")
         lines.append("# See targets.conf.example for what this section does.")
         for account, pattern in account_patterns.items():
-            lines.append(f'ACCOUNT_BRANCH_PATTERNS[{account}]="{pattern}"')
+            if not _ACCOUNT_KEY_RE.match(account):
+                print(
+                    f"  warning: dropping ACCOUNT_BRANCH_PATTERNS entry with unsafe "
+                    f"key {account!r} from the existing file -- fix it by hand if it's needed"
+                )
+                continue
+            lines.append(f'ACCOUNT_BRANCH_PATTERNS[{account}]="{_bash_dquote(pattern)}"')
         lines.append("")
 
     return "\n".join(lines)
@@ -96,7 +145,7 @@ def _validate_with_bash(path: Path) -> None:
         "set -euo pipefail; "
         "declare -A TARGET_DIR=(); declare -A ALLOWED_BRANCHES=(); "
         "declare -A ALLOWED_ENV_FILES=(); declare -A ACCOUNT_BRANCH_PATTERNS=(); "
-        f'source "{path.as_posix()}"'
+        f"source {shlex.quote(path.as_posix())}"
     )
     result = subprocess.run([bash, "-c", script], capture_output=True, text=True)
     if result.returncode != 0:
@@ -133,6 +182,7 @@ def _stage_compose(target_dir: Path) -> None:
 def _stage_env_files(target_dir: Path, env_file_names: list[str]) -> None:
     envfiles_dir = target_dir / "envfiles"
     envfiles_dir.mkdir(parents=True, exist_ok=True)
+    envfiles_dir_resolved = envfiles_dir.resolve()
     for name in env_file_names:
         src = prompt_optional(f"Path to a local file to seed '{name}' with")
         if not src:
@@ -142,8 +192,16 @@ def _stage_env_files(target_dir: Path, env_file_names: list[str]) -> None:
         if not src_path.is_file():
             print(f"  {src_path} not found -- skipping {name}")
             continue
-        shutil.copy(src_path, envfiles_dir / name)
-        print(f"  staged {envfiles_dir / name}")
+        # Belt-and-suspenders on top of ENVFILE_NAME_RE validation at prompt
+        # time: refuse to write outside envfiles_dir even if `name` somehow
+        # got here unvalidated (e.g. a future caller of this function).
+        dest = envfiles_dir / name
+        dest_resolved = dest.resolve()
+        if dest_resolved.parent != envfiles_dir_resolved:
+            print(f"  refusing to stage {name!r} -- resolves outside the staging directory")
+            continue
+        shutil.copy(src_path, dest)
+        print(f"  staged {dest}")
 
 
 def main() -> None:
@@ -171,11 +229,16 @@ def main() -> None:
         print("Aborted.")
         return
 
-    branches = prompt_list("Allowed branches (comma-separated; globs like codex/* are fine)")
-    env_files = prompt_list("Allowed env file names (comma-separated)")
-    bad_env_files = [f for f in env_files if not f.endswith(".env")]
-    if bad_env_files:
-        print(f"  note: these don't end in .env and won't ever match: {', '.join(bad_env_files)}")
+    branches = prompt_list(
+        "Allowed branches (comma-separated; globs like codex/* are fine)",
+        validator=BRANCH_PATTERN_RE,
+        item_hint=BRANCH_PATTERN_HINT,
+    )
+    env_files = prompt_list(
+        "Allowed env file names (comma-separated)",
+        validator=ENVFILE_NAME_RE,
+        item_hint=ENVFILE_NAME_HINT,
+    )
 
     remote_base_dir = f"/opt/targets/{name}"
     targets[name] = {
@@ -208,18 +271,29 @@ def main() -> None:
     remote_conf_tmp = f"/tmp/{conf_path.name}"
     # .as_posix() here, not str(): on Windows these get pasted into scp/ssh,
     # which want forward slashes regardless of the host OS's own separator.
+    # Everything printed below is shell-quoted so a local path containing
+    # spaces or other shell-special characters still pastes as one command.
+    local_staging_q = shlex.quote(target_staging.as_posix())
+    local_conf_q = shlex.quote(conf_path.as_posix())
+    ssh_dest_q = shlex.quote(ssh_dest)
+    remote_tmp_q = shlex.quote(remote_tmp)
+    remote_conf_tmp_q = shlex.quote(remote_conf_tmp)
+    remote_base_dir_q = shlex.quote(remote_base_dir)
     print()
-    print(f"scp -r {target_staging.as_posix()} {ssh_dest}:{remote_tmp}")
-    print(f"scp {conf_path.as_posix()} {ssh_dest}:{remote_conf_tmp}")
-    print(f"ssh {ssh_dest}")
+    print(f"scp -r {local_staging_q} {ssh_dest_q}:{remote_tmp_q}")
+    print(f"scp {local_conf_q} {ssh_dest_q}:{remote_conf_tmp_q}")
+    print(f"ssh {ssh_dest_q}")
     print("  # once connected, as a user with sudo:")
-    print(f"  sudo mkdir -p {remote_base_dir}/envfiles")
-    print(f"  sudo git clone <your-repo-url> {remote_base_dir}/repo")
-    print(f"  sudo install -m 644 -o root -g root {remote_tmp}/docker-compose.yml {remote_base_dir}/docker-compose.yml")
+    print(f"  sudo mkdir -p {remote_base_dir_q}/envfiles")
+    print(f"  sudo git clone <your-repo-url> {remote_base_dir_q}/repo")
+    print(
+        f"  sudo install -m 644 -o root -g root {remote_tmp_q}/docker-compose.yml "
+        f"{remote_base_dir_q}/docker-compose.yml"
+    )
     if env_files:
-        print(f"  sudo install -m 600 -o root -g root {remote_tmp}/envfiles/*.env {remote_base_dir}/envfiles/")
-    print(f"  sudo install -m 600 -o root -g root {remote_conf_tmp} /opt/deploy/targets.conf")
-    print(f"  rm -rf {remote_tmp} {remote_conf_tmp}")
+        print(f"  sudo install -m 600 -o root -g root {remote_tmp_q}/envfiles/*.env {remote_base_dir_q}/envfiles/")
+    print(f"  sudo install -m 600 -o root -g root {remote_conf_tmp_q} /opt/deploy/targets.conf")
+    print(f"  rm -rf {remote_tmp_q} {remote_conf_tmp_q}")
     print()
     print("Also make sure this target is listed in every agent's own config.yaml")
     print("that should be able to reach it (`homelab-deploy-init`, or edit by hand).")

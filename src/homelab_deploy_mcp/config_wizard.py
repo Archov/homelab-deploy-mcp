@@ -18,9 +18,10 @@ from pathlib import Path
 import yaml
 
 from ._wizard_common import die, prompt, prompt_int, prompt_list, prompt_yes_no
-from .config import ConfigError, TARGET_NAME_RE, load_config
+from .config import BRANCH_PATTERN_RE, ConfigError, ENVFILE_NAME_RE, TARGET_NAME_RE, load_config
 
-ENVFILE_NAME_HINT = "must end in .env, e.g. prod.env"
+ENVFILE_NAME_HINT = "must end in .env with no path separators, e.g. prod.env"
+BRANCH_PATTERN_HINT = "letters/digits/_/./-  and * ? [ ] for glob patterns, no spaces or shell characters"
 
 
 def _generate_key(key_path: Path) -> None:
@@ -58,7 +59,7 @@ def _generate_key(key_path: Path) -> None:
 def _collect_ssh_section() -> dict:
     print("\n--- SSH connection ---")
     host = prompt("Homelab server hostname or IP")
-    port = prompt_int("SSH port", default=22)
+    port = prompt_int("SSH port", default=22, min_value=1, max_value=65535)
     user = prompt("Unix account for this agent (e.g. homelab-deploy-claude)")
 
     key_path_str = prompt(
@@ -88,9 +89,9 @@ def _collect_ssh_section() -> dict:
             break
         print("  must start with 'SHA256:' — paste the whole line ssh-keygen printed")
 
-    connect_timeout = prompt_int("Connect timeout seconds", default=15)
+    connect_timeout = prompt_int("Connect timeout seconds", default=15, min_value=1)
     command_timeout = prompt_int(
-        "Command timeout seconds (docker builds can be slow)", default=600
+        "Command timeout seconds (docker builds can be slow)", default=600, min_value=1
     )
     remote_script = prompt(
         "Path to redeploy.sh on the homelab host", default="/opt/deploy/redeploy.sh"
@@ -121,15 +122,15 @@ def _collect_targets() -> dict:
                 break
             print(f"  must match {TARGET_NAME_RE.pattern} (lowercase letters/digits/_/-)")
         branches = prompt_list(
-            "Allowed branches (comma-separated; globs like codex/* are fine)"
+            "Allowed branches (comma-separated; globs like codex/* are fine)",
+            validator=BRANCH_PATTERN_RE,
+            item_hint=BRANCH_PATTERN_HINT,
         )
         env_files = prompt_list(
             "Allowed env file names (comma-separated)",
-            validator=None,
+            validator=ENVFILE_NAME_RE,
+            item_hint=ENVFILE_NAME_HINT,
         )
-        bad_env_files = [f for f in env_files if not f.endswith(".env")]
-        if bad_env_files:
-            print(f"  note: these don't end in .env and won't ever match: {', '.join(bad_env_files)}")
         targets[name] = {"allowed_branches": branches, "allowed_env_files": env_files}
         if not prompt_yes_no("Add another target?", default=False):
             break

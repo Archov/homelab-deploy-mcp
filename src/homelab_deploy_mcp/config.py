@@ -28,6 +28,24 @@ import yaml
 # project identity despite living in separate directories.
 TARGET_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
+# Mirrors deploy/redeploy.sh and deploy/deploy-executor.sh's BRANCH_SYNTAX,
+# widened by `*`/`?`/`[`/`]` so a glob pattern like "codex/*" is still
+# accepted here — the bash side allows the same characters in a
+# *configured* ALLOWED_BRANCHES entry, since that's matched as a pattern,
+# not compared as a literal branch name. Used by both wizards to validate
+# branch entries at prompt time (rather than only warning) and, in
+# target_wizard.py, as one more constraint before values are written into
+# a `source`d file.
+BRANCH_PATTERN_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./*?\[\]-]*$")
+
+# Mirrors deploy/redeploy.sh and deploy/deploy-executor.sh's ENVFILE_SYNTAX
+# exactly: basename-only (no `/`), ends in `.env`. Both wizards validate
+# entries against this at prompt time so a value that could never actually
+# match a real request (and, in target_wizard.py, could otherwise be used
+# as an unsafe filesystem path component when staging) is rejected before
+# it's ever written anywhere.
+ENVFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*\.env$")
+
 
 class ConfigError(ValueError):
     """Raised when config.yaml is missing or has invalid values."""
