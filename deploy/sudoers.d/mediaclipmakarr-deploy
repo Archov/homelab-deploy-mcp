@@ -2,16 +2,18 @@
 # Always validate with `visudo -cf` before installing — a syntax error in
 # /etc/sudoers.d/ can lock out sudo entirely.
 #
-# This grants mediaclipmakarr-deploy exactly two capabilities: running
-# /opt/deploy/docker-compose-up-root.sh with the literal argument "prod.env",
-# or with the literal argument "staging.env" — nothing else. sudo matches
-# the full command line exactly, so no other argument, flag, or extra word
-# is accepted; this list must be updated (along with the ALLOWED_ENV_FILES
-# array inside docker-compose-up-root.sh, and mediaclipmakarr-redeploy.sh,
-# and config.yaml's allowed_env_files) any time you add a new env file.
-# That's intentional friction: adding a new deployable env file is a
-# deliberate, reviewed, human action, not something an agent can expand on
-# its own.
+# This grants mediaclipmakarr-deploy exactly one capability: running
+# /opt/deploy/mediaclipmakarr-deploy-executor.sh as root, with any
+# arguments, no password prompt. That's intentionally broad at the sudoers
+# level — branch names are dynamic, and trying to enumerate every exact
+# (branch, env-file) combination here would either need updating on every
+# new branch or would have to be wide enough to be meaningless. The actual
+# enforcement lives inside that script: it independently validates both
+# arguments against its own hardcoded allowlist before doing anything, and
+# never passes them through a shell (no eval, no bash -c, no string-built
+# commands) — so there's nothing for this wildcard to let through unsafely.
+# This is the standard, documented sudoers pattern for a command that does
+# its own argument validation.
 #
 # This account should NOT also be a member of the `docker` group — that
 # would make this rule pointless, since group membership alone already
@@ -23,7 +25,4 @@
 # this one account.
 Defaults:mediaclipmakarr-deploy !requiretty
 
-Cmnd_Alias MEDIACLIPMAKARR_DEPLOY_PROD = /opt/deploy/docker-compose-up-root.sh prod.env
-Cmnd_Alias MEDIACLIPMAKARR_DEPLOY_STAGING = /opt/deploy/docker-compose-up-root.sh staging.env
-
-mediaclipmakarr-deploy ALL=(root) NOPASSWD: MEDIACLIPMAKARR_DEPLOY_PROD, MEDIACLIPMAKARR_DEPLOY_STAGING
+mediaclipmakarr-deploy ALL=(root) NOPASSWD: /opt/deploy/mediaclipmakarr-deploy-executor.sh *

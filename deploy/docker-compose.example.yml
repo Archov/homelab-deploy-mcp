@@ -22,7 +22,7 @@ services:
       context: /opt/mediaclipmakarr
       dockerfile: Dockerfile
     env_file:
-      - /opt/deploy/active.env # written by docker-compose-up-root.sh from a pre-approved file in envfiles/
+      - /opt/deploy/active.env # written by mediaclipmakarr-deploy-executor.sh from a pre-approved file in envfiles/
     restart: unless-stopped
     ports:
       - "3623:3623" # adjust to your actual port mapping

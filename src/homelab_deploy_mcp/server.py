@@ -2,8 +2,11 @@
 
 Runs over stdio, meant to be launched by an MCP client (Claude Code, Codex,
 etc.) as a local subprocess. It never listens on any port itself — the only
-network activity is the outbound SSH connection it makes to your homelab
-host when a tool is invoked.
+network activity it initiates is an outbound SSH connection to your homelab
+host when a tool is invoked. That still requires your homelab to have SSH
+reachable from wherever this runs; this design just reuses whatever SSH
+access you already have for administering the box rather than adding a new
+bespoke inbound listener/port the way a webhook- or HTTP-based tool would.
 """
 
 from __future__ import annotations
@@ -28,14 +31,17 @@ mcp = MCPServer("homelab-deploy")
 def redeploy_media_clip_makarr(branch: str, env_file: str) -> str:
     """Rebuild and restart the MediaClipMakarr docker compose stack on the homelab server.
 
-    Runs, on the homelab host: `git checkout <branch>`, swaps in the
-    requested env file as `.env`, then
-    `docker compose up -d --force-recreate --build`.
+    Runs, on the homelab host: resets a root-owned git checkout to the
+    requested branch (removing any untracked/ignored cruft first), activates
+    the requested pre-approved env file, then runs
+    `docker compose up -d --force-recreate --build` against a compose file
+    that also lives on the host, not in the branch.
 
     Both arguments are validated against the allowlist in config.yaml
-    before anything runs, and validated again independently by the forced
-    SSH command on the homelab host itself, so a bug here can't bypass the
-    allowlist there.
+    before anything runs, and validated again independently — twice — on
+    the homelab host itself: once by the unprivileged forced SSH command,
+    and again by the root-owned executor it invokes via sudo. A bug here
+    can't bypass either of those.
 
     Args:
         branch: Git branch to deploy. Must be one of
@@ -58,7 +64,7 @@ def redeploy_media_clip_makarr(branch: str, env_file: str) -> str:
         raise ToolError(f"env_file '{env_file}' is not allowed. Allowed env files: {allowed}")
 
     try:
-        result = run_remote_command(config.ssh, [target.remote_script, branch, env_file])
+        result = run_remote_command(config.ssh, [target.remote_script, "deploy", branch, env_file])
     except SshCommandError as exc:
         raise ToolError(f"Could not reach the homelab host: {exc}") from exc
 
