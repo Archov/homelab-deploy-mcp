@@ -21,7 +21,12 @@ from typing import Any
 
 import yaml
 
-_TARGET_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+# Lowercase-only: target names double as Docker Compose project names on
+# the host side (see deploy/deploy-executor.sh's --project-name), and
+# Compose project names are lowercase-only. Two target names differing
+# only in case would otherwise be free to collide on the same Compose
+# project identity despite living in separate directories.
+_TARGET_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 class ConfigError(ValueError):

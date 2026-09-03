@@ -122,3 +122,16 @@ def test_invalid_target_name_raises(tmp_path: Path, fake_key: Path) -> None:
 
     with pytest.raises(ConfigError, match="invalid target name"):
         load_config(config_path)
+
+
+def test_uppercase_target_name_raises(tmp_path: Path, fake_key: Path) -> None:
+    # Target names double as Docker Compose project names on the host side,
+    # and Compose project names are lowercase-only. Two names differing
+    # only in case (e.g. "Foo"/"foo") would otherwise be free to collide on
+    # the same Compose project identity despite living in separate
+    # directories -- reject the mixed-case one before that's possible.
+    body = VALID_YAML.replace("mediaclipmakarr:", "MediaClipMakarr:")
+    config_path = write_config(tmp_path, fake_key, body)
+
+    with pytest.raises(ConfigError, match="invalid target name"):
+        load_config(config_path)

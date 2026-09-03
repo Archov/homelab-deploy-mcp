@@ -35,7 +35,10 @@ umask 007
 
 LOG_FILE="/var/log/homelab-deploy/deploy.log"
 
-TARGET_SYNTAX='^[A-Za-z0-9_-]+$'
+# TARGET_SYNTAX is lowercase-only, matching deploy-executor.sh's copy of
+# this pattern — see that script's comment on why (Docker Compose project
+# names are lowercase-only, and target names double as project names).
+TARGET_SYNTAX='^[a-z0-9][a-z0-9_-]*$'
 BRANCH_SYNTAX='^[A-Za-z0-9_][A-Za-z0-9_./-]*$'
 ENVFILE_SYNTAX='^[A-Za-z0-9_][A-Za-z0-9_.-]*\.env$'
 

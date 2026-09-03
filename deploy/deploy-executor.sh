@@ -61,7 +61,16 @@ declare -A ALLOWED_ENV_FILES=(
 # guarantees none of these values can start with `-` (so none can ever be
 # mistaken for a flag by whatever it's passed to) and gives a clear error
 # instead of an obscure git/docker failure on garbage input.
-TARGET_SYNTAX='^[A-Za-z0-9_-]+$'
+#
+# TARGET_SYNTAX is lowercase-only (matching Docker Compose's own project-name
+# character rules) on purpose, not just style: --project-name below is set
+# to $target directly, and two target names differing only in case (e.g.
+# "Foo" and "foo") would otherwise be free to collide on the same Compose
+# project identity even though they live in separate directories.
+# Bash associative array keys are already exact-match unique, so forbidding
+# case variation here is what actually makes that uniqueness carry through
+# to Compose.
+TARGET_SYNTAX='^[a-z0-9][a-z0-9_-]*$'
 BRANCH_SYNTAX='^[A-Za-z0-9_][A-Za-z0-9_./-]*$'
 ENVFILE_SYNTAX='^[A-Za-z0-9_][A-Za-z0-9_.-]*\.env$'
 
@@ -144,4 +153,10 @@ git clean -fdx
 
 install -m 600 -o root -g root "$env_dir/$envfile" "$active_env"
 
-exec docker compose -f "$compose_file" --project-directory "$base_dir" up -d --force-recreate --build
+# --project-name is set explicitly, not left to Compose's own default (the
+# --project-directory basename, lowercased): that default is what a
+# same-after-lowercasing target name could collide on. Tying it directly to
+# $target — already validated lowercase and unique as a TARGET_DIR key —
+# makes project identity collision-free by construction instead of by
+# convention.
+exec docker compose -f "$compose_file" --project-directory "$base_dir" --project-name "$target" up -d --force-recreate --build
