@@ -9,6 +9,13 @@
 # That means the allowlist below is enforced here even if the MCP server
 # (or the machine it runs on) is ever compromised — the homelab host never
 # trusts the caller, it only trusts its own copy of this list.
+#
+# This account is NOT in the `docker` group — that would be root-equivalent
+# (anyone with docker-group access can `docker run --privileged -v /:/host
+# ... chroot /host`, no compose file required). Instead, git/filesystem
+# operations below run as this unprivileged user, and only the final
+# docker-compose-up-root.sh script runs as root, via a `sudo` rule pinned
+# to that exact script path (see sudoers.d/mediaclipmakarr-deploy).
 set -euo pipefail
 
 REPO_DIR="/opt/mediaclipmakarr"
@@ -58,6 +65,6 @@ fi
   git checkout "$branch"
   git reset --hard "origin/$branch"
   cp "$ENV_DIR/$envfile" "$REPO_DIR/.env"
-  docker compose up -d --force-recreate --build
+  sudo /opt/deploy/docker-compose-up-root.sh
   echo "=== deploy finished with exit code $? ==="
 } | tee -a "$LOG_FILE"

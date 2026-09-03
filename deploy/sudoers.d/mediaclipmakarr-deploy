@@ -1,0 +1,17 @@
+# Install with: sudo install -m 440 -o root -g root sudoers.d/mediaclipmakarr-deploy /etc/sudoers.d/mediaclipmakarr-deploy
+# Always validate with `visudo -cf` before installing — a syntax error in
+# /etc/sudoers.d/ can lock out sudo entirely.
+#
+# This grants mediaclipmakarr-deploy exactly one capability: running
+# /opt/deploy/docker-compose-up-root.sh as root, with no password prompt
+# and no arguments. Nothing else. This account should NOT also be a member
+# of the `docker` group — that would make this rule pointless, since group
+# membership alone already grants full daemon control.
+
+# SSH exec_command sessions (what the MCP server uses) have no controlling
+# tty. Some distros default to `Defaults requiretty`, which would make sudo
+# refuse to run at all in that context — this line overrides that for just
+# this one account.
+Defaults:mediaclipmakarr-deploy !requiretty
+
+mediaclipmakarr-deploy ALL=(root) NOPASSWD: /opt/deploy/docker-compose-up-root.sh
