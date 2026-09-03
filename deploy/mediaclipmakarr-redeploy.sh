@@ -16,10 +16,15 @@
 # operations below run as this unprivileged user, and only the final
 # docker-compose-up-root.sh script runs as root, via a `sudo` rule pinned
 # to that exact script path (see sudoers.d/mediaclipmakarr-deploy).
+#
+# This account never reads or writes docker-compose.yml or any env file
+# content — it only checks out source code. Selecting and activating an env
+# file happens entirely inside docker-compose-up-root.sh, as root, so this
+# account can't even read the env file's secrets, let alone edit compose
+# config to add a bind mount or drop a capability restriction.
 set -euo pipefail
 
 REPO_DIR="/opt/mediaclipmakarr"
-ENV_DIR="/opt/deploy/envfiles"
 LOG_FILE="/var/log/mediaclipmakarr-deploy.log"
 
 ALLOWED_BRANCHES=("main" "feature/make-clip-moc-update")
@@ -27,8 +32,14 @@ ALLOWED_ENV_FILES=("prod.env" "staging.env")
 
 # Branch names and env filenames never contain spaces, so plain
 # word-splitting is sufficient (and avoids pulling in extra parsing tools).
+# `set -f` first disables glob expansion for that split — otherwise a
+# crafted $SSH_ORIGINAL_COMMAND containing a metacharacter like `*` would
+# expand against files in this script's CWD instead of being treated as a
+# literal value.
+set -f
 # shellcheck disable=SC2086
 set -- ${SSH_ORIGINAL_COMMAND:-}
+set +f
 
 if [[ "$#" -ne 3 ]]; then
   echo "usage (via SSH_ORIGINAL_COMMAND): <script-path> <branch> <env-file>" >&2
@@ -64,7 +75,6 @@ fi
   git fetch origin
   git checkout "$branch"
   git reset --hard "origin/$branch"
-  cp "$ENV_DIR/$envfile" "$REPO_DIR/.env"
-  sudo /opt/deploy/docker-compose-up-root.sh
+  sudo /opt/deploy/docker-compose-up-root.sh "$envfile"
   echo "=== deploy finished with exit code $? ==="
 } | tee -a "$LOG_FILE"

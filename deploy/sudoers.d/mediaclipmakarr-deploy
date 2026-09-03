@@ -2,11 +2,20 @@
 # Always validate with `visudo -cf` before installing — a syntax error in
 # /etc/sudoers.d/ can lock out sudo entirely.
 #
-# This grants mediaclipmakarr-deploy exactly one capability: running
-# /opt/deploy/docker-compose-up-root.sh as root, with no password prompt
-# and no arguments. Nothing else. This account should NOT also be a member
-# of the `docker` group — that would make this rule pointless, since group
-# membership alone already grants full daemon control.
+# This grants mediaclipmakarr-deploy exactly two capabilities: running
+# /opt/deploy/docker-compose-up-root.sh with the literal argument "prod.env",
+# or with the literal argument "staging.env" — nothing else. sudo matches
+# the full command line exactly, so no other argument, flag, or extra word
+# is accepted; this list must be updated (along with the ALLOWED_ENV_FILES
+# array inside docker-compose-up-root.sh, and mediaclipmakarr-redeploy.sh,
+# and config.yaml's allowed_env_files) any time you add a new env file.
+# That's intentional friction: adding a new deployable env file is a
+# deliberate, reviewed, human action, not something an agent can expand on
+# its own.
+#
+# This account should NOT also be a member of the `docker` group — that
+# would make this rule pointless, since group membership alone already
+# grants full daemon control.
 
 # SSH exec_command sessions (what the MCP server uses) have no controlling
 # tty. Some distros default to `Defaults requiretty`, which would make sudo
@@ -14,4 +23,7 @@
 # this one account.
 Defaults:mediaclipmakarr-deploy !requiretty
 
-mediaclipmakarr-deploy ALL=(root) NOPASSWD: /opt/deploy/docker-compose-up-root.sh
+Cmnd_Alias MEDIACLIPMAKARR_DEPLOY_PROD = /opt/deploy/docker-compose-up-root.sh prod.env
+Cmnd_Alias MEDIACLIPMAKARR_DEPLOY_STAGING = /opt/deploy/docker-compose-up-root.sh staging.env
+
+mediaclipmakarr-deploy ALL=(root) NOPASSWD: MEDIACLIPMAKARR_DEPLOY_PROD, MEDIACLIPMAKARR_DEPLOY_STAGING
