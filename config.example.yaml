@@ -25,10 +25,12 @@ ssh:
   # ever one of these per host, regardless of how many targets you add.
   remote_script: "/opt/deploy/redeploy.sh"
 
-# One entry per project you want deployable. This list is a client-side
-# mirror for fast, clear rejection — the real allowlist that actually gets
-# enforced lives on the homelab host, inside deploy/deploy-executor.sh.
-# Keep the two in sync by hand; see that script's own comments.
+# A mapping of target name -> allowlist, one entry per project you want
+# deployable (not a YAML list/sequence — the loader rejects one). This
+# mapping is a client-side mirror for fast, clear rejection — the real
+# allowlist that actually gets enforced lives on the homelab host, inside
+# deploy/deploy-executor.sh. Keep the two in sync by hand; see that
+# script's own comments.
 targets:
   mediaclipmakarr:
     allowed_branches:

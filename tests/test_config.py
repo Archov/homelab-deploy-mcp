@@ -75,6 +75,28 @@ def test_missing_remote_script_raises(tmp_path: Path, fake_key: Path) -> None:
         load_config(config_path)
 
 
+def test_non_string_remote_script_raises(tmp_path: Path, fake_key: Path) -> None:
+    # A YAML list here would otherwise pass loading unnoticed (it's not
+    # None or "") and only fail much later inside shlex.quote(), as a
+    # confusing TypeError instead of a clear ConfigError.
+    body = VALID_YAML.replace(
+        'remote_script: "/opt/deploy/redeploy.sh"',
+        "remote_script:\n    - /opt/deploy/redeploy.sh",
+    )
+    config_path = write_config(tmp_path, fake_key, body)
+
+    with pytest.raises(ConfigError, match="remote_script must be a string"):
+        load_config(config_path)
+
+
+def test_non_string_ssh_user_raises(tmp_path: Path, fake_key: Path) -> None:
+    body = VALID_YAML.replace('user: "deploy"', "user: 123")
+    config_path = write_config(tmp_path, fake_key, body)
+
+    with pytest.raises(ConfigError, match="user must be a string"):
+        load_config(config_path)
+
+
 def test_bad_fingerprint_format_raises(tmp_path: Path, fake_key: Path) -> None:
     body = VALID_YAML.replace('"SHA256:abc123"', '"not-a-fingerprint"')
     config_path = write_config(tmp_path, fake_key, body)

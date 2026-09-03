@@ -64,6 +64,17 @@ def _require(mapping: dict[str, Any], key: str, section: str) -> Any:
     return value
 
 
+def _require_str(mapping: dict[str, Any], key: str, section: str) -> str:
+    value = _require(mapping, key, section)
+    if not isinstance(value, str):
+        raise ConfigError(
+            f"{section}.{key} must be a string, got {type(value).__name__} "
+            f"({value!r}) — a YAML list or mapping here would otherwise pass "
+            "loading and fail later with a much less clear error"
+        )
+    return value
+
+
 def _require_list(mapping: dict[str, Any], key: str, section: str) -> tuple[str, ...]:
     value = _require(mapping, key, section)
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
@@ -92,7 +103,7 @@ def load_config(config_path: Path) -> AppConfig:
     if not isinstance(targets_raw, dict):
         raise ConfigError("targets must be a mapping of target name -> target config")
 
-    key_path = Path(_require(ssh_raw, "key_path", "ssh")).expanduser()
+    key_path = Path(_require_str(ssh_raw, "key_path", "ssh")).expanduser()
     if not key_path.is_file():
         raise ConfigError(f"SSH key not found at {key_path} (ssh.key_path)")
 
@@ -105,14 +116,14 @@ def load_config(config_path: Path) -> AppConfig:
         )
 
     ssh = SshConfig(
-        host=_require(ssh_raw, "host", "ssh"),
+        host=_require_str(ssh_raw, "host", "ssh"),
         port=int(ssh_raw.get("port", 22)),
-        user=_require(ssh_raw, "user", "ssh"),
+        user=_require_str(ssh_raw, "user", "ssh"),
         key_path=key_path,
         host_key_fingerprint=fingerprint,
         connect_timeout_seconds=float(ssh_raw.get("connect_timeout_seconds", 15)),
         command_timeout_seconds=float(ssh_raw.get("command_timeout_seconds", 600)),
-        remote_script=_require(ssh_raw, "remote_script", "ssh"),
+        remote_script=_require_str(ssh_raw, "remote_script", "ssh"),
     )
 
     if not targets_raw:

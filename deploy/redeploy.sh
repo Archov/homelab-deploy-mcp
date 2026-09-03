@@ -78,8 +78,22 @@ if ! [[ "$envfile" =~ $ENVFILE_SYNTAX ]]; then
   exit 67
 fi
 
+# A brace group's own exit status is that of its LAST command — if that
+# were the trailing `echo` below (which always succeeds), the group would
+# always report success regardless of whether `sudo` actually failed, and
+# with `pipefail` only inspecting each pipeline STAGE's own final status
+# (not commands buried inside one), a failed deploy would still make this
+# whole script exit 0 to the SSH caller. Capturing `sudo`'s status
+# immediately and `exit`-ing the group with it explicitly is what makes
+# that status the group's own, so `pipefail` has a real failure to
+# propagate. `2>&1` on the sudo call sends deploy-executor.sh's stderr
+# through this same pipe too, so its actual error output lands in
+# $LOG_FILE instead of only the generic "finished with exit code N" line.
 {
   echo "=== $(date -u +%FT%TZ) deploy requested target=$target branch=$branch env=$envfile ==="
-  sudo /opt/deploy/deploy-executor.sh "$target" "$branch" "$envfile"
-  echo "=== deploy finished with exit code $? ==="
+  sudo /opt/deploy/deploy-executor.sh "$target" "$branch" "$envfile" 2>&1
+  status=$?
+  echo "=== deploy finished with exit code $status ==="
+  exit "$status"
 } | tee -a "$LOG_FILE"
+exit "${PIPESTATUS[0]}"
