@@ -63,6 +63,28 @@ declare -A ALLOWED_ENV_FILES=(
   [mediaclipmakarr]="prod.env staging.env"
 )
 
+# Optional, per-account narrowing on top of ALLOWED_BRANCHES above, keyed
+# by the homelab-deploy-<agent> account name — NOT by target, so it applies
+# across whichever target that account requests. This is what makes "only
+# the codex account can deploy codex/* branches" a real, host-enforced
+# rule rather than just a convention each agent's own config.yaml happens
+# to follow: every account in the homelab-deploy group otherwise shares
+# the exact same capability (see the README's "threat model" section), so
+# without this, nothing stops the codex key from requesting `main` even if
+# codex's own config.yaml never would.
+#
+# Opt-in on purpose: an account with NO entry here is unrestricted beyond
+# whatever ALLOWED_BRANCHES already allows for the target it names, so
+# adding a new agent (see the README's "Adding an agent") never requires
+# touching this table unless you specifically want to scope it. A branch
+# must satisfy BOTH this (if the calling account has an entry) AND the
+# target's own ALLOWED_BRANCHES to be accepted — this can only narrow what
+# a target already allows, never widen it.
+declare -A ACCOUNT_BRANCH_PATTERNS=(
+  [homelab-deploy-codex]="codex/*"
+  [homelab-deploy-claude]="claude/*"
+)
+
 # Cheap, early rejection of obviously-malformed input. This is NOT the real
 # security boundary — the allowlist checks below are (exact-match for
 # target/env-file, exact-match-or-glob for branch) — but it guarantees
@@ -138,6 +160,20 @@ fi
 if ! [[ "$branch" =~ $BRANCH_SYNTAX ]] || ! branch_matches_pattern "$branch" "${ALLOWED_BRANCHES[$target]-}"; then
   echo "branch not allowed for $target: $branch" >&2
   exit 66
+fi
+
+# $SUDO_USER is set by sudo itself, from the real invoking account's UID —
+# not something the caller can override via its own environment, since
+# sudo resets the environment by default (this repo's sudoers rule doesn't
+# add remote_script or SUDO_USER to env_keep). Falls back to empty if this
+# script is ever run directly as root rather than through sudo (e.g. local
+# testing), which simply skips the restriction below, same as an account
+# with no entry in the table.
+calling_account="${SUDO_USER:-}"
+if [[ -n "${ACCOUNT_BRANCH_PATTERNS[$calling_account]+set}" ]] \
+  && ! branch_matches_pattern "$branch" "${ACCOUNT_BRANCH_PATTERNS[$calling_account]}"; then
+  echo "branch '$branch' is not allowed for account '$calling_account' (target '$target' would otherwise allow it)" >&2
+  exit 70
 fi
 
 if ! [[ "$envfile" =~ $ENVFILE_SYNTAX ]] || ! word_in_list "$envfile" "${ALLOWED_ENV_FILES[$target]-}"; then
