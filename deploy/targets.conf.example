@@ -1,0 +1,47 @@
+# Copy this to /opt/deploy/targets.conf on the homelab host (or let
+# `homelab-deploy-add-target` generate it for you — see the README).
+#
+# This file is `source`d by deploy-executor.sh, not parsed as inert data —
+# it runs as bash, as root, exactly like that script does. Install it with
+# the same care: root-owned, mode 600, never writable by anything in the
+# homelab-deploy group.
+#   sudo install -m 600 -o root -g root targets.conf /opt/deploy/targets.conf
+#
+# One block per target. "myproject" below is a placeholder — copy the
+# block, rename the key in all four lines to your real target name (must
+# be lowercase, matching ^[a-z0-9][a-z0-9_-]*$ — it doubles as a Docker
+# Compose project name), and fill in real values. This file can hold as
+# many targets as you want; each is completely independent.
+
+# --- myproject ---------------------------------------------------------
+
+# Where this target's checkout/compose/env files live on this host. The
+# fixed subpaths (repo/, docker-compose.yml, envfiles/, active.env) are
+# assumed by deploy-executor.sh — only the base directory is configurable.
+TARGET_DIR[myproject]="/opt/targets/myproject"
+
+# Exact branch names or shell-glob patterns, space-separated. A pattern
+# like "codex/*" allows any branch under that prefix.
+ALLOWED_BRANCHES[myproject]="main codex/*"
+
+# Exact env-file names only (no globs) — these must exist at
+# /opt/targets/myproject/envfiles/<name> and end in .env.
+ALLOWED_ENV_FILES[myproject]="prod.env staging.env"
+
+# --- optional: per-account branch restriction ---------------------------
+#
+# ACCOUNT_BRANCH_PATTERNS is keyed by Unix account name (homelab-deploy-<agent>),
+# NOT by target — one entry applies across every target that account
+# requests. A branch must match BOTH the account's pattern here AND the
+# target's own ALLOWED_BRANCHES above to be accepted, so this can only
+# narrow what a target allows, never widen it. Leave an account out
+# entirely to leave it unrestricted beyond each target's own list — this
+# whole section is optional and most setups won't need it.
+#
+# ACCOUNT_BRANCH_PATTERNS[homelab-deploy-codex]="codex/*"
+# ACCOUNT_BRANCH_PATTERNS[homelab-deploy-claude]="claude/*"
+
+# --- another-project -----------------------------------------------------
+# TARGET_DIR[another-project]="/opt/targets/another-project"
+# ALLOWED_BRANCHES[another-project]="main"
+# ALLOWED_ENV_FILES[another-project]="prod.env"

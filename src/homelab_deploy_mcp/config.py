@@ -26,7 +26,7 @@ import yaml
 # Compose project names are lowercase-only. Two target names differing
 # only in case would otherwise be free to collide on the same Compose
 # project identity despite living in separate directories.
-_TARGET_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+TARGET_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 class ConfigError(ValueError):
@@ -131,10 +131,10 @@ def load_config(config_path: Path) -> AppConfig:
 
     targets: dict[str, DeployTargetConfig] = {}
     for name, target_raw in targets_raw.items():
-        if not isinstance(name, str) or not _TARGET_NAME_RE.match(name):
+        if not isinstance(name, str) or not TARGET_NAME_RE.match(name):
             raise ConfigError(
                 f"invalid target name {name!r} — target names must match "
-                f"{_TARGET_NAME_RE.pattern} (this is also what the host-side "
+                f"{TARGET_NAME_RE.pattern} (this is also what the host-side "
                 "executor expects as a lookup key)"
             )
         if not isinstance(target_raw, dict):

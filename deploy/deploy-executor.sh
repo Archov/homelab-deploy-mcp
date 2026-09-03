@@ -28,12 +28,13 @@ set -euo pipefail
 
 # --- per-target configuration (host-side, authoritative) -------------------
 #
-# This table is the real security boundary for target/branch/env-file
-# selection. The MCP request only ever supplies a target NAME plus a branch
-# and env-file NAME to look up here — never a path, never a docker
-# argument. config.yaml has its own copy of the branch/env-file lists for
-# fast client-side rejection, but THIS table is what actually gets
-# enforced; keep them in sync by hand.
+# The four tables below are the real security boundary for
+# target/branch/env-file/account selection. The MCP request only ever
+# supplies a target NAME plus a branch and env-file NAME to look up here —
+# never a path, never a docker argument. config.yaml has its own copy of
+# the branch/env-file lists for fast client-side rejection, but THIS data
+# is what actually gets enforced; keep them in sync by hand (or with the
+# add-target wizard, which writes both from one place).
 #
 # Every target lives under a fixed directory layout at
 # /opt/targets/<name>/:
@@ -42,48 +43,42 @@ set -euo pipefail
 #   envfiles/*.env       pre-approved candidate env files
 #   active.env           written here by this script before each deploy
 #
-# To add a target: add one line to TARGET_DIR, ALLOWED_BRANCHES, and
-# ALLOWED_ENV_FILES below, then create that directory structure on disk
-# (see the README's "Adding a target" section).
-#
 # ALLOWED_BRANCHES entries may be exact branch names or shell-glob
 # patterns (e.g. "codex/*" allows any branch under that prefix) — see
 # branch_matches_pattern below. ALLOWED_ENV_FILES stays exact-match only;
 # there's no legitimate reason for an env-file name to need a wildcard,
 # and env files are the more sensitive of the two (they're secrets, not
-# just a source-code selector).
-
-declare -A TARGET_DIR=(
-  [mediaclipmakarr]="/opt/targets/mediaclipmakarr"
-)
-declare -A ALLOWED_BRANCHES=(
-  [mediaclipmakarr]="main feature/make-clip-moc-update codex/*"
-)
-declare -A ALLOWED_ENV_FILES=(
-  [mediaclipmakarr]="prod.env staging.env"
-)
-
-# Optional, per-account narrowing on top of ALLOWED_BRANCHES above, keyed
-# by the homelab-deploy-<agent> account name — NOT by target, so it applies
-# across whichever target that account requests. This is what makes "only
-# the codex account can deploy codex/* branches" a real, host-enforced
-# rule rather than just a convention each agent's own config.yaml happens
-# to follow: every account in the homelab-deploy group otherwise shares
-# the exact same capability (see the README's "threat model" section), so
-# without this, nothing stops the codex key from requesting `main` even if
-# codex's own config.yaml never would.
+# just a source-code selector). ACCOUNT_BRANCH_PATTERNS is optional,
+# per-account narrowing on top of ALLOWED_BRANCHES, keyed by the
+# homelab-deploy-<agent> account name — see the assignments' own comments
+# in targets.conf for the full explanation of each.
 #
-# Opt-in on purpose: an account with NO entry here is unrestricted beyond
-# whatever ALLOWED_BRANCHES already allows for the target it names, so
-# adding a new agent (see the README's "Adding an agent") never requires
-# touching this table unless you specifically want to scope it. A branch
-# must satisfy BOTH this (if the calling account has an entry) AND the
-# target's own ALLOWED_BRANCHES to be accepted — this can only narrow what
-# a target already allows, never widen it.
-declare -A ACCOUNT_BRANCH_PATTERNS=(
-  [homelab-deploy-codex]="codex/*"
-  [homelab-deploy-claude]="claude/*"
-)
+# The actual data lives in a SEPARATE file, /opt/deploy/targets.conf,
+# sourced below rather than declared inline here — see
+# targets.conf.example for the format and comments, and the README's
+# "Adding a target" section (or `homelab-deploy-add-target`) for how to
+# generate and install it. Splitting it out means this script — the
+# reviewed, security-critical logic — never has to change just because a
+# target was added; only the data file does.
+#
+# IMPORTANT: targets.conf is `source`d, not parsed as inert data — it runs
+# as bash, as root, exactly like this script. It needs the exact same
+# treatment: root-owned, mode 600, never writable by anything in the
+# homelab-deploy group, installed only by a human (or the wizard's printed
+# instructions) via the same install pattern used for this file. A wizard
+# generating it nicely does not relax that requirement at all.
+declare -A TARGET_DIR=()
+declare -A ALLOWED_BRANCHES=()
+declare -A ALLOWED_ENV_FILES=()
+declare -A ACCOUNT_BRANCH_PATTERNS=()
+
+TARGETS_CONF="/opt/deploy/targets.conf"
+if [[ ! -f "$TARGETS_CONF" ]]; then
+  echo "targets.conf not found at $TARGETS_CONF — see targets.conf.example" >&2
+  exit 71
+fi
+# shellcheck source=targets.conf.example
+source "$TARGETS_CONF"
 
 # Cheap, early rejection of obviously-malformed input. This is NOT the real
 # security boundary — the allowlist checks below are (exact-match for
