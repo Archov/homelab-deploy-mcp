@@ -12,11 +12,15 @@ ssh:
   user: "deploy"
   key_path: "{key_path}"
   host_key_fingerprint: "SHA256:abc123"
-
-mediaclipmakarr:
   remote_script: "/opt/deploy/redeploy.sh"
-  allowed_branches: ["main"]
-  allowed_env_files: ["prod.env"]
+
+targets:
+  mediaclipmakarr:
+    allowed_branches: ["main"]
+    allowed_env_files: ["prod.env"]
+  otherproject:
+    allowed_branches: ["main", "dev"]
+    allowed_env_files: ["prod.env", "staging.env"]
 """
 
 
@@ -43,8 +47,11 @@ def test_load_config_happy_path(tmp_path: Path, fake_key: Path) -> None:
     assert config.ssh.host == "10.0.0.5"
     assert config.ssh.port == 22  # default
     assert config.ssh.key_path == fake_key
-    assert config.mediaclipmakarr.allowed_branches == ("main",)
-    assert config.mediaclipmakarr.allowed_env_files == ("prod.env",)
+    assert config.ssh.remote_script == "/opt/deploy/redeploy.sh"
+    assert set(config.targets) == {"mediaclipmakarr", "otherproject"}
+    assert config.targets["mediaclipmakarr"].allowed_branches == ("main",)
+    assert config.targets["mediaclipmakarr"].allowed_env_files == ("prod.env",)
+    assert config.targets["otherproject"].allowed_branches == ("main", "dev")
 
 
 def test_missing_file_raises_config_error(tmp_path: Path) -> None:
@@ -57,6 +64,14 @@ def test_missing_ssh_key_file_raises(tmp_path: Path) -> None:
     config_path = write_config(tmp_path, missing_key, VALID_YAML)
 
     with pytest.raises(ConfigError, match="SSH key not found"):
+        load_config(config_path)
+
+
+def test_missing_remote_script_raises(tmp_path: Path, fake_key: Path) -> None:
+    body = VALID_YAML.replace('remote_script: "/opt/deploy/redeploy.sh"', "")
+    config_path = write_config(tmp_path, fake_key, body)
+
+    with pytest.raises(ConfigError, match="remote_script"):
         load_config(config_path)
 
 
@@ -81,4 +96,29 @@ def test_missing_section_raises(tmp_path: Path, fake_key: Path) -> None:
     config_path = write_config(tmp_path, fake_key, body)
 
     with pytest.raises(ConfigError):
+        load_config(config_path)
+
+
+def test_no_targets_raises(tmp_path: Path, fake_key: Path) -> None:
+    body = """
+ssh:
+  host: "10.0.0.5"
+  user: "deploy"
+  key_path: "{key_path}"
+  host_key_fingerprint: "SHA256:abc123"
+  remote_script: "/opt/deploy/redeploy.sh"
+
+targets: {{}}
+"""
+    config_path = write_config(tmp_path, fake_key, body)
+
+    with pytest.raises(ConfigError, match="at least one target"):
+        load_config(config_path)
+
+
+def test_invalid_target_name_raises(tmp_path: Path, fake_key: Path) -> None:
+    body = VALID_YAML.replace("mediaclipmakarr:", "bad target name:")
+    config_path = write_config(tmp_path, fake_key, body)
+
+    with pytest.raises(ConfigError, match="invalid target name"):
         load_config(config_path)

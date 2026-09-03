@@ -28,43 +28,60 @@ mcp = MCPServer("homelab-deploy")
 
 
 @mcp.tool()
-def redeploy_media_clip_makarr(branch: str, env_file: str) -> str:
-    """Rebuild and restart the MediaClipMakarr docker compose stack on the homelab server.
+def redeploy(target: str, branch: str, env_file: str) -> str:
+    """Rebuild and restart a configured docker compose stack on the homelab server.
 
-    Runs, on the homelab host: resets a root-owned git checkout to the
-    requested branch (removing any untracked/ignored cruft first), activates
-    the requested pre-approved env file, then runs
-    `docker compose up -d --force-recreate --build` against a compose file
-    that also lives on the host, not in the branch.
+    `target` selects which project to deploy, from the `targets:` map in
+    config.yaml. This tool never accepts a filesystem path or a docker
+    argument directly — every path (the checkout, the compose file, the
+    env files) is resolved host-side, inside the privileged executor, from
+    a per-target table it owns. Runs, on the homelab host: resets that
+    target's root-owned git checkout to the requested branch (removing any
+    untracked/ignored cruft first), activates the requested pre-approved
+    env file, then runs `docker compose up -d --force-recreate --build`
+    against that target's own compose file — none of which ever comes from
+    the branch itself.
 
-    Both arguments are validated against the allowlist in config.yaml
+    All three arguments are validated against the allowlist in config.yaml
     before anything runs, and validated again independently — twice — on
-    the homelab host itself: once by the unprivileged forced SSH command,
-    and again by the root-owned executor it invokes via sudo. A bug here
-    can't bypass either of those.
+    the homelab host itself: once (syntax only) by the unprivileged forced
+    SSH command, and again (against the real, host-side allowlist) by the
+    root-owned executor it invokes via sudo. A bug here can't bypass either
+    of those.
 
     Args:
-        branch: Git branch to deploy. Must be one of
-            config.yaml's mediaclipmakarr.allowed_branches.
-        env_file: Name of a pre-existing env file on the homelab host to
-            copy in as .env for this deploy. Must be one of config.yaml's
-            mediaclipmakarr.allowed_env_files.
+        target: Which configured project to redeploy. Must be a key under
+            config.yaml's `targets:` map.
+        branch: Git branch to deploy. Must be one of that target's
+            `allowed_branches`.
+        env_file: Name of a pre-existing env file on the homelab host.
+            Must be one of that target's `allowed_env_files`.
     """
     try:
         config = load_config(CONFIG_PATH)
     except ConfigError as exc:
         raise ToolError(f"Server misconfigured ({CONFIG_PATH}): {exc}") from exc
-    target = config.mediaclipmakarr
 
-    if branch not in target.allowed_branches:
-        allowed = ", ".join(target.allowed_branches)
-        raise ToolError(f"branch '{branch}' is not allowed. Allowed branches: {allowed}")
-    if env_file not in target.allowed_env_files:
-        allowed = ", ".join(target.allowed_env_files)
-        raise ToolError(f"env_file '{env_file}' is not allowed. Allowed env files: {allowed}")
+    target_config = config.targets.get(target)
+    if target_config is None:
+        available = ", ".join(sorted(config.targets)) or "(none configured)"
+        raise ToolError(f"target '{target}' is not configured. Available targets: {available}")
+
+    if branch not in target_config.allowed_branches:
+        allowed = ", ".join(target_config.allowed_branches)
+        raise ToolError(
+            f"branch '{branch}' is not allowed for target '{target}'. Allowed branches: {allowed}"
+        )
+    if env_file not in target_config.allowed_env_files:
+        allowed = ", ".join(target_config.allowed_env_files)
+        raise ToolError(
+            f"env_file '{env_file}' is not allowed for target '{target}'. Allowed env files: {allowed}"
+        )
 
     try:
-        result = run_remote_command(config.ssh, [target.remote_script, "deploy", branch, env_file])
+        result = run_remote_command(
+            config.ssh, [config.ssh.remote_script, "deploy", target, branch, env_file]
+        )
     except SshCommandError as exc:
         raise ToolError(f"Could not reach the homelab host: {exc}") from exc
 

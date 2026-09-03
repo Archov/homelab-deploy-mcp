@@ -1,5 +1,8 @@
-# Copy this to /opt/deploy/docker-compose.yml on the homelab host, own it
-# root:root, and edit it to match your actual runtime requirements.
+# Copy this to /opt/targets/<target-name>/docker-compose.yml on the
+# homelab host (e.g. /opt/targets/mediaclipmakarr/docker-compose.yml), own
+# it root:root, and edit it to match that target's actual runtime
+# requirements. Repeat once per target — each gets its own compose file at
+# this fixed location, per the layout deploy-executor.sh expects.
 #
 # This file is NEVER sourced from the git repo, and the redeploy pipeline
 # never writes to it. Nothing pushed to a branch can add a volume, flip
@@ -15,25 +18,28 @@
 # `build.context` is the one field that DOES point at the git checkout —
 # that's the actual "deploy this branch's code" mechanism. Everything else
 # below is fixed configuration, independent of whatever's on the branch.
+# Both paths below assume this file lives at
+# /opt/targets/mediaclipmakarr/docker-compose.yml — adjust the target name
+# for other targets.
 
 services:
   mediaclipmakarr:
     build:
-      context: /opt/mediaclipmakarr
+      context: /opt/targets/mediaclipmakarr/repo
       dockerfile: Dockerfile
     env_file:
-      - /opt/deploy/active.env # written by mediaclipmakarr-deploy-executor.sh from a pre-approved file in envfiles/
+      - /opt/targets/mediaclipmakarr/active.env # written by deploy-executor.sh from a pre-approved file in envfiles/
     restart: unless-stopped
     ports:
       - "3623:3623" # adjust to your actual port mapping
     # Keep this list as short as possible, and prefer read-only mounts of
     # specific paths over anything broad. Never mount `/`, a parent of
-    # /opt/deploy or /opt/mediaclipmakarr, or any host path this container
-    # doesn't specifically need — especially once docker_exec-style
-    # troubleshooting tools exist, since anything mounted here becomes
-    # reachable from inside an exec session too.
+    # /opt/targets, or any host path this container doesn't specifically
+    # need — especially once docker_exec-style troubleshooting tools
+    # exist, since anything mounted here becomes reachable from inside an
+    # exec session too.
     volumes:
-      - /opt/mediaclipmakarr-data:/data # example — replace with your real data path
+      - /opt/targets/mediaclipmakarr/data:/data # example — replace with your real data path
     # Do not add `privileged: true`, `cap_add`, or `network_mode: host`
     # unless you have a specific, reviewed reason to. Each one turns a
     # container escape from "hypothetical" into "one known technique away".

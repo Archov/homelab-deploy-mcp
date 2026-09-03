@@ -5,8 +5,8 @@
 ssh:
   host: "192.168.1.50" # your homelab server's IP or hostname
   port: 22
-  user: "mediaclipmakarr-deploy" # a dedicated, restricted account — see README
-  key_path: "~/.ssh/mediaclipmakarr_deploy_ed25519"
+  user: "homelab-deploy" # a single dedicated, restricted account shared by all targets
+  key_path: "~/.ssh/homelab_deploy_ed25519"
   # Pin the host key so a changed/spoofed host key is refused rather than
   # silently trusted. Get this from the homelab server itself, not from the
   # client, and verify it out-of-band (e.g. by running this over a
@@ -15,13 +15,25 @@ ssh:
   host_key_fingerprint: "SHA256:REPLACE_ME"
   connect_timeout_seconds: 15
   command_timeout_seconds: 600 # docker builds can take a while
+  # Path to the forced-command entrypoint on the homelab host (see
+  # deploy/redeploy.sh). Shared across every target below — there's only
+  # ever one of these per host, regardless of how many targets you add.
+  remote_script: "/opt/deploy/redeploy.sh"
 
-mediaclipmakarr:
-  # Path to the forced-command script on the homelab host (see deploy/).
-  remote_script: "/opt/deploy/mediaclipmakarr-redeploy.sh"
-  allowed_branches:
-    - main
-    - feature/make-clip-moc-update
-  allowed_env_files:
-    - prod.env
-    - staging.env
+# One entry per project you want deployable. This list is a client-side
+# mirror for fast, clear rejection — the real allowlist that actually gets
+# enforced lives on the homelab host, inside deploy/deploy-executor.sh.
+# Keep the two in sync by hand; see that script's own comments.
+targets:
+  mediaclipmakarr:
+    allowed_branches:
+      - main
+      - feature/make-clip-moc-update
+    allowed_env_files:
+      - prod.env
+      - staging.env
+  # otherproject:
+  #   allowed_branches:
+  #     - main
+  #   allowed_env_files:
+  #     - prod.env
