@@ -11,6 +11,7 @@ bespoke inbound listener/port the way a webhook- or HTTP-based tool would.
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import sys
 from pathlib import Path
@@ -25,6 +26,22 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config.ya
 CONFIG_PATH = Path(os.environ.get("HOMELAB_DEPLOY_MCP_CONFIG", DEFAULT_CONFIG_PATH)).expanduser()
 
 mcp = MCPServer("homelab-deploy")
+
+
+def _branch_allowed(branch: str, patterns: tuple[str, ...]) -> bool:
+    """True if `branch` matches any of `patterns`.
+
+    Patterns are shell-glob style ("codex/*" matches any branch under that
+    prefix) and matched with fnmatchcase, not fnmatch — the latter
+    case-folds via os.path.normcase on Windows, which would make a pattern
+    like "codex/*" also match "Codex/Foo" on a Windows-hosted MCP server
+    but not on the Linux homelab host actually enforcing the same table,
+    a divergence from git's own case-sensitive branch names that fnmatch
+    alone would introduce silently. A plain name with no wildcard
+    characters (e.g. "main") only matches that exact branch, unchanged
+    from before this existed.
+    """
+    return any(fnmatch.fnmatchcase(branch, pattern) for pattern in patterns)
 
 
 @mcp.tool()
@@ -52,8 +69,9 @@ def redeploy(target: str, branch: str, env_file: str) -> str:
     Args:
         target: Which configured project to redeploy. Must be a key under
             config.yaml's `targets:` map.
-        branch: Git branch to deploy. Must be one of that target's
-            `allowed_branches`.
+        branch: Git branch to deploy. Must match one of that target's
+            `allowed_branches` — either exactly, or against a glob
+            pattern there (e.g. "codex/*").
         env_file: Name of a pre-existing env file on the homelab host.
             Must be one of that target's `allowed_env_files`.
     """
@@ -67,7 +85,7 @@ def redeploy(target: str, branch: str, env_file: str) -> str:
         available = ", ".join(sorted(config.targets)) or "(none configured)"
         raise ToolError(f"target '{target}' is not configured. Available targets: {available}")
 
-    if branch not in target_config.allowed_branches:
+    if not _branch_allowed(branch, target_config.allowed_branches):
         allowed = ", ".join(target_config.allowed_branches)
         raise ToolError(
             f"branch '{branch}' is not allowed for target '{target}'. Allowed branches: {allowed}"

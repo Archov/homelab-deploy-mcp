@@ -62,6 +62,14 @@ async def main() -> None:
             )
             print(f"  is_error={result.is_error} content={result.content}")
 
+            print("\nCalling with a branch matching the codex/* glob pattern (should pass")
+            print("allowlist validation and reach the same SSH-connect-failure stage):")
+            result = await session.call_tool(
+                "redeploy",
+                {"target": "mediaclipmakarr", "branch": "codex/some-feature", "env_file": "prod.env"},
+            )
+            print(f"  is_error={result.is_error} content={result.content}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

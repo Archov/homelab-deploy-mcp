@@ -36,6 +36,12 @@ targets:
     allowed_branches:
       - main
       - feature/make-clip-moc-update
+      # A glob pattern, not just an exact name: matches any branch under
+      # this prefix (e.g. codex/my-feature), which is handy for an agent
+      # that creates its own branches on the fly rather than working off
+      # a fixed, known set. Only branches matter here, not env files --
+      # env_file entries below stay exact-match names always.
+      - "codex/*"
     allowed_env_files:
       - prod.env
       - staging.env

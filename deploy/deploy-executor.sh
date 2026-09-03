@@ -45,20 +45,28 @@ set -euo pipefail
 # To add a target: add one line to TARGET_DIR, ALLOWED_BRANCHES, and
 # ALLOWED_ENV_FILES below, then create that directory structure on disk
 # (see the README's "Adding a target" section).
+#
+# ALLOWED_BRANCHES entries may be exact branch names or shell-glob
+# patterns (e.g. "codex/*" allows any branch under that prefix) — see
+# branch_matches_pattern below. ALLOWED_ENV_FILES stays exact-match only;
+# there's no legitimate reason for an env-file name to need a wildcard,
+# and env files are the more sensitive of the two (they're secrets, not
+# just a source-code selector).
 
 declare -A TARGET_DIR=(
   [mediaclipmakarr]="/opt/targets/mediaclipmakarr"
 )
 declare -A ALLOWED_BRANCHES=(
-  [mediaclipmakarr]="main feature/make-clip-moc-update"
+  [mediaclipmakarr]="main feature/make-clip-moc-update codex/*"
 )
 declare -A ALLOWED_ENV_FILES=(
   [mediaclipmakarr]="prod.env staging.env"
 )
 
 # Cheap, early rejection of obviously-malformed input. This is NOT the real
-# security boundary — the exact-match allowlist checks below are — but it
-# guarantees none of these values can start with `-` (so none can ever be
+# security boundary — the allowlist checks below are (exact-match for
+# target/env-file, exact-match-or-glob for branch) — but it guarantees
+# none of these values can start with `-` (so none can ever be
 # mistaken for a flag by whatever it's passed to) and gives a clear error
 # instead of an obscure git/docker failure on garbage input.
 #
@@ -85,11 +93,38 @@ target="$1"
 branch="$2"
 envfile="$3"
 
+# `set -f` around the splits below matters, not just style: $haystack is a
+# space-separated string being split into words via unquoted expansion,
+# and without noglob a word like "codex/*" would itself be expanded
+# against real files/directories in the current working directory (if any
+# happened to match) instead of staying the literal token these functions
+# need to compare against. `[[ ... ]]`'s own pattern matching further down
+# is unaffected by `set -f` either way — this is purely about the splitting
+# step.
 word_in_list() {
   local needle="$1" haystack="$2" item
+  set -f
   for item in $haystack; do
-    [[ "$item" == "$needle" ]] && return 0
+    [[ "$item" == "$needle" ]] && { set +f; return 0; }
   done
+  set +f
+  return 1
+}
+
+# Same as word_in_list, but each entry in $haystack is matched as a
+# shell-glob PATTERN against $needle rather than compared literally — this
+# is what lets an ALLOWED_BRANCHES entry like "codex/*" allow any branch
+# under that prefix. A plain entry with no glob metacharacters (e.g.
+# "main") still only matches that exact branch, since `[[ str == pattern
+# ]]` degrades to a literal comparison when the pattern has nothing to
+# expand.
+branch_matches_pattern() {
+  local needle="$1" haystack="$2" pattern
+  set -f
+  for pattern in $haystack; do
+    [[ "$needle" == $pattern ]] && { set +f; return 0; }
+  done
+  set +f
   return 1
 }
 
@@ -100,7 +135,7 @@ if ! [[ "$target" =~ $TARGET_SYNTAX ]] || [[ -z "${TARGET_DIR[$target]+set}" ]];
   exit 65
 fi
 
-if ! [[ "$branch" =~ $BRANCH_SYNTAX ]] || ! word_in_list "$branch" "${ALLOWED_BRANCHES[$target]-}"; then
+if ! [[ "$branch" =~ $BRANCH_SYNTAX ]] || ! branch_matches_pattern "$branch" "${ALLOWED_BRANCHES[$target]-}"; then
   echo "branch not allowed for $target: $branch" >&2
   exit 66
 fi
