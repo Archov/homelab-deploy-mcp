@@ -10,6 +10,7 @@ to the homelab host — everything here is local file generation.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,12 @@ from .config import BRANCH_PATTERN_RE, ConfigError, ENVFILE_NAME_RE, TARGET_NAME
 
 ENVFILE_NAME_HINT = "must end in .env with no path separators, e.g. prod.env"
 BRANCH_PATTERN_HINT = "letters/digits/_/./-  and * ? [ ] for glob patterns, no spaces or shell characters"
+
+# Matches the bare token ssh_client.py's _sha256_fingerprint() produces
+# (base64, no padding) so it can be pulled out of whatever the user pastes
+# -- including the full `ssh-keygen -lf ... -E sha256` output line, e.g.
+# "256 SHA256:AbCd...xyz user@host (ED25519)", not just the bare token.
+FINGERPRINT_RE = re.compile(r"SHA256:[A-Za-z0-9+/]+")
 
 
 def _generate_key(key_path: Path) -> None:
@@ -84,10 +91,12 @@ def _collect_ssh_section() -> dict:
         "  ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256"
     )
     while True:
-        fingerprint = prompt("Paste that fingerprint (SHA256:...)")
-        if fingerprint.startswith("SHA256:"):
+        raw_fingerprint = prompt("Paste that fingerprint (SHA256:...)")
+        match = FINGERPRINT_RE.search(raw_fingerprint)
+        if match:
+            fingerprint = match.group(0)
             break
-        print("  must start with 'SHA256:' — paste the whole line ssh-keygen printed")
+        print("  couldn't find a SHA256:<hash> token — paste the whole line ssh-keygen printed")
 
     connect_timeout = prompt_int("Connect timeout seconds", default=15, min_value=1)
     command_timeout = prompt_int(

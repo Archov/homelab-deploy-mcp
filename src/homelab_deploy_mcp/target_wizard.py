@@ -253,7 +253,13 @@ def main() -> None:
 
     print(f"\n--- Staging files for '{name}' ---")
     target_staging = staging_root / name
-    target_staging.mkdir(parents=True, exist_ok=True)
+    if target_staging.exists():
+        # Rebuild from scratch: otherwise a file from a previous run (e.g.
+        # an old docker-compose.yml, or an envfiles/*.env this run left
+        # blank/skipped) would linger and still get copied/installed even
+        # though this run never re-confirmed it.
+        shutil.rmtree(target_staging)
+    target_staging.mkdir(parents=True)
     _stage_compose(target_staging)
     _stage_env_files(target_staging, env_files)
 
