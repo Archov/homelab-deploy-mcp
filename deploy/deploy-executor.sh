@@ -231,4 +231,12 @@ install -m 600 -o root -g root "$env_dir/$envfile" "$active_env"
 # $target — already validated lowercase and unique as a TARGET_DIR key —
 # makes project identity collision-free by construction instead of by
 # convention.
-exec docker compose -f "$compose_file" --project-directory "$base_dir" --project-name "$target" up -d --force-recreate --build
+#
+# --env-file is required too: Compose's own variable interpolation (${VAR}
+# references in docker-compose.yml itself, e.g. in a volumes: host path)
+# only reads a file literally named .env in --project-directory by default.
+# $active_env is never named that -- without this flag, activating an env
+# file has no effect on interpolation and any required variable in it
+# fails with "variable ... is missing a value" even though the file was
+# correctly installed and copied above.
+exec docker compose -f "$compose_file" --project-directory "$base_dir" --project-name "$target" --env-file "$active_env" up -d --force-recreate --build

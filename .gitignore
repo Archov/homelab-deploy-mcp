@@ -18,3 +18,5 @@ dist/
 build/
 .mypy_cache/
 .ruff_cache/
+*.config.yaml
+.mcp.json
