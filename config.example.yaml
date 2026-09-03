@@ -1,0 +1,27 @@
+# Copy this file to config.yaml (already gitignored) and fill in your own
+# homelab details. Never commit the real config.yaml — it names your host,
+# your SSH user, and the path to your private key.
+
+ssh:
+  host: "192.168.1.50" # your homelab server's IP or hostname
+  port: 22
+  user: "mediaclipmakarr-deploy" # a dedicated, restricted account — see README
+  key_path: "~/.ssh/mediaclipmakarr_deploy_ed25519"
+  # Pin the host key so a changed/spoofed host key is refused rather than
+  # silently trusted. Get this from the homelab server itself, not from the
+  # client, and verify it out-of-band (e.g. by running this over a
+  # connection you already trust, like a console session):
+  #   ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
+  host_key_fingerprint: "SHA256:REPLACE_ME"
+  connect_timeout_seconds: 15
+  command_timeout_seconds: 600 # docker builds can take a while
+
+mediaclipmakarr:
+  # Path to the forced-command script on the homelab host (see deploy/).
+  remote_script: "/opt/deploy/mediaclipmakarr-redeploy.sh"
+  allowed_branches:
+    - main
+    - feature/make-clip-moc-update
+  allowed_env_files:
+    - prod.env
+    - staging.env
