@@ -12,6 +12,8 @@ dependencies = [
 
 [project.scripts]
 homelab-deploy-mcp = "homelab_deploy_mcp.server:main"
+homelab-deploy-init = "homelab_deploy_mcp.config_wizard:main"
+homelab-deploy-add-target = "homelab_deploy_mcp.target_wizard:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]

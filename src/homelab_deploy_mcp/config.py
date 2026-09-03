@@ -26,7 +26,25 @@ import yaml
 # Compose project names are lowercase-only. Two target names differing
 # only in case would otherwise be free to collide on the same Compose
 # project identity despite living in separate directories.
-_TARGET_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+TARGET_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+# Mirrors deploy/redeploy.sh and deploy/deploy-executor.sh's BRANCH_SYNTAX,
+# widened by `*`/`?`/`[`/`]` so a glob pattern like "codex/*" is still
+# accepted here — the bash side allows the same characters in a
+# *configured* ALLOWED_BRANCHES entry, since that's matched as a pattern,
+# not compared as a literal branch name. Used by both wizards to validate
+# branch entries at prompt time (rather than only warning) and, in
+# target_wizard.py, as one more constraint before values are written into
+# a `source`d file.
+BRANCH_PATTERN_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./*?\[\]-]*$")
+
+# Mirrors deploy/redeploy.sh and deploy/deploy-executor.sh's ENVFILE_SYNTAX
+# exactly: basename-only (no `/`), ends in `.env`. Both wizards validate
+# entries against this at prompt time so a value that could never actually
+# match a real request (and, in target_wizard.py, could otherwise be used
+# as an unsafe filesystem path component when staging) is rejected before
+# it's ever written anywhere.
+ENVFILE_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*\.env$")
 
 
 class ConfigError(ValueError):
@@ -131,10 +149,10 @@ def load_config(config_path: Path) -> AppConfig:
 
     targets: dict[str, DeployTargetConfig] = {}
     for name, target_raw in targets_raw.items():
-        if not isinstance(name, str) or not _TARGET_NAME_RE.match(name):
+        if not isinstance(name, str) or not TARGET_NAME_RE.match(name):
             raise ConfigError(
                 f"invalid target name {name!r} — target names must match "
-                f"{_TARGET_NAME_RE.pattern} (this is also what the host-side "
+                f"{TARGET_NAME_RE.pattern} (this is also what the host-side "
                 "executor expects as a lookup key)"
             )
         if not isinstance(target_raw, dict):

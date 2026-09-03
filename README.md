@@ -11,6 +11,15 @@ It exposes exactly one tool, `redeploy(target, branch, env_file)`, which:
 
 `target` only ever selects among projects a human configured ahead of time on the homelab host — never a filesystem path, never a docker argument. Each target gets its own directory, its own compose file, its own env files, and its own branch allowlist; the executor keeps them completely separate, so a request scoped to one target can never touch another's checkout, compose file, or env file, and a branch or env file allowed for one target is rejected for any other it wasn't also explicitly allowed for.
 
+## Quick start
+
+Two wizards handle the tedious file-generation parts. The host-side steps that need root — creating the group and accounts, installing the scripts, the sudoers rule — stay manual on purpose (see "Setup" below for why), but they're a handful of copy-pasteable commands, not something you have to write yourself.
+
+1. `pip install -e .`
+2. `homelab-deploy-init` — prompts for the homelab host, the agent's Unix account, its SSH key (offers to generate one for you), and its targets, then writes and validates `config.yaml`. Run once per agent.
+3. `homelab-deploy-add-target` — prompts for a target's name, allowed branches/env files, and local paths to its `docker-compose.yml`/env files, writes `targets.conf`, stages the files locally, and prints the exact `scp`/`sudo install` commands to get everything onto the host. Run once per target.
+4. Work through "Setup" below once for the parts neither wizard touches. Steps 3, 6, and 11 are exactly what the two wizards above replace — when you get there, use the wizard's printed output instead of typing those specific commands by hand.
+
 ## The threat model this is (and isn't) built for
 
 This is a CYA measure against an agent going off-script — accidentally redeploying the wrong thing, running an unreviewed branch, or fat-fingering a docker invocation into something destructive — not a defense against a sophisticated attacker who already has an SSH private key. In that spirit, every account with any access here has *by default* the same, narrow set of capabilities: run one root-owned executor with any arguments (which independently re-validates them against its own per-target table), nothing else. Adding an account to the `homelab-deploy` group is the only thing required to grant it that — narrowing an individual account further than that default is optional, and covered below.
@@ -92,7 +101,7 @@ sudo chown root:root /opt/deploy/deploy-executor.sh
 sudo chmod 700 /opt/deploy/deploy-executor.sh   # root-only; reached only via sudo, regardless of caller
 ```
 
-Before or after copying it, edit `deploy-executor.sh`'s three associative arrays (`TARGET_DIR`, `ALLOWED_BRANCHES`, `ALLOWED_ENV_FILES`) to list your real targets — see "Adding a target" below.
+`deploy-executor.sh` itself has no per-target data in it — it `source`s `/opt/deploy/targets.conf` for that, which you install separately per target. See "Adding a target" below (or just use `homelab-deploy-add-target`, which generates that file and prints the exact install commands for it).
 
 ### 5. Lock each agent's SSH key to the forced command
 
@@ -114,6 +123,8 @@ Skip `from=` if that machine's address isn't stable — a wrong or stale value h
 
 ### 6. Set up each target
 
+`homelab-deploy-add-target` does the file-generation and staging part of this and prints the exact commands to run — the rest of this step is the manual reference for what those commands actually do (or for doing it entirely by hand instead).
+
 Repeat this per project. Everything here is owned by `root`, not by `homelab-deploy`:
 
 ```bash
@@ -131,14 +142,21 @@ sudo chown root:root "/opt/targets/$target/docker-compose.yml"
 sudo chmod 644 "/opt/targets/$target/docker-compose.yml"
 
 # Pre-approved env files, named exactly as they appear in this target's
-# entry in config.yaml's targets map AND deploy-executor.sh's
-# ALLOWED_ENV_FILES:
+# entry in config.yaml's targets map AND targets.conf's ALLOWED_ENV_FILES:
 sudo cp /path/to/your/prod.env "/opt/targets/$target/envfiles/prod.env"
 sudo chown -R root:root "/opt/targets/$target"
 sudo chmod 600 "/opt/targets/$target"/envfiles/*.env
 # No account in the homelab-deploy group gets any access to this — only
 # the root-owned executor ever reads it.
 ```
+
+Then install `targets.conf` itself — see `deploy/targets.conf.example` for the format (or generate it with `homelab-deploy-add-target`, which also updates this file correctly when you add a second, third, etc. target):
+
+```bash
+sudo install -m 600 -o root -g root targets.conf /opt/deploy/targets.conf
+```
+
+This *replaces* the whole file, not merges into it — it needs to contain every target you want deployable, not just the one you just added. The wizard handles this correctly by regenerating the full file from your local copy each time; if you're editing by hand, keep one canonical `targets.conf` with every target in it rather than juggling separate per-target snippets.
 
 ### 7. Install the sudoers rule
 
@@ -187,11 +205,13 @@ pip install -e .
 
 ### 11. Configure — one `config.yaml` per agent
 
+`homelab-deploy-init` does this interactively and validates the result — run it instead of the manual version below unless you'd rather edit YAML by hand:
+
 ```bash
 cp config.example.yaml config-claude.yaml   # one file per agent; name them however you like
 ```
 
-Fill in each agent's own copy: your host, *that agent's* `homelab-deploy-<agent>` user and private key path from steps 2–3, `ssh.remote_script` (`/opt/deploy/redeploy.sh` — same for every agent), the fingerprint from step 9 (same for every agent), and a `targets:` entry for each project you want that agent able to reach — matching what you put in `deploy-executor.sh`'s tables in step 4. Give two agents different `targets:` maps if you want one of them restricted to fewer projects (see the caveat on that in "The threat model..." above).
+Fill in each agent's own copy: your host, *that agent's* `homelab-deploy-<agent>` user and private key path from steps 2–3, `ssh.remote_script` (`/opt/deploy/redeploy.sh` — same for every agent), the fingerprint from step 9 (same for every agent), and a `targets:` entry for each project you want that agent able to reach — matching what you put in `targets.conf` in step 6. Give two agents different `targets:` maps if you want one of them restricted to fewer projects (see the caveat on that in "The threat model..." above).
 
 Keep each of these gitignored — never commit them.
 
@@ -228,10 +248,12 @@ ssh -i ~/.ssh/homelab_deploy_claude_ed25519 homelab-deploy-claude@your-homelab-h
 
 ## Adding a target
 
-This is the whole point of the multi-target design — it should be small:
+This is the whole point of the multi-target design — it should be small. Run `homelab-deploy-add-target` and it handles most of it: prompts for the target's name/branches/env-files, writes `targets.conf` (merging with whatever targets are already in your local copy), stages `docker-compose.yml` and env files locally, and prints the exact commands to copy and install everything on the host. What it can't do (no host access): actually run those commands, or add the target to each agent's `config.yaml`.
+
+Doing it by hand is the same three things:
 
 1. `config.yaml` (each agent's copy that should be able to reach it): add an entry under `targets:` with that project's `allowed_branches`/`allowed_env_files`.
-2. `deploy-executor.sh` on the homelab host: add one line to each of `TARGET_DIR`, `ALLOWED_BRANCHES`, `ALLOWED_ENV_FILES`.
+2. `targets.conf` on the homelab host: add one line to each of `TARGET_DIR`, `ALLOWED_BRANCHES`, `ALLOWED_ENV_FILES` — see `deploy/targets.conf.example`.
 3. On the host: `sudo mkdir -p /opt/targets/<name>/envfiles`, clone the repo to `/opt/targets/<name>/repo`, install a `docker-compose.yml` there, and drop in the pre-approved env files — same as step 6 above.
 
 Nothing else. The group, its accounts and keys, and the sudoers rule already cover it.
@@ -241,9 +263,9 @@ Nothing else. The group, its accounts and keys, and the sudoers rule already cov
 Also small, and doesn't touch anything target-related:
 
 1. Create the account and add it to the group: `sudo useradd --system --create-home --shell /bin/bash --groups homelab-deploy homelab-deploy-<agent>` (step 2 above).
-2. Generate that agent's own key pair (step 3 above).
+2. Generate that agent's own key pair (step 3 above) — or let `homelab-deploy-init` do it as part of the next step.
 3. Add that key to the new account's `~/.ssh/authorized_keys` with the same `restrict,command="/opt/deploy/redeploy.sh"` clause every other agent uses (step 5 above).
-4. Give it its own `config.yaml` pointing at its own account/key (step 11 above), and register that with the agent's MCP client (step 12 above).
+4. Give it its own `config.yaml` pointing at its own account/key (`homelab-deploy-init`, or step 11 above by hand), and register that with the agent's MCP client (step 12 above).
 
 That's it for the default case — nothing on the homelab host's privileged side needs to change. That's the entire benefit of authorizing by group membership instead of by username.
 
@@ -256,7 +278,9 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Tests cover config validation (including the multi-target schema) and the host-key fingerprint helper — both pure logic, no network. There's no automated test for the actual SSH/git/docker path; the logic in `deploy/*.sh` was exercised during development against a sandboxed setup with two independent fake targets and stubbed `sudo`/`docker`/`install` — including deliberately tampering with a tracked file and planting an untracked one to confirm `reset --hard` + `clean -fdx` remove both before a build would run, and deliberately requesting one target's allowed branch against the other target to confirm the per-target tables don't leak into each other — but that isn't part of this repo's automated suite. Verify the real path against a real (or throwaway test) host per step 13 above.
+Tests cover config validation (including the multi-target schema), the host-key fingerprint helper, and the target-wizard's `targets.conf` parse/render logic (round-trips, preserves unrelated targets and `ACCOUNT_BRANCH_PATTERNS` entries across regeneration) — all pure logic, no network. There's no automated test for the actual SSH/git/docker path; the logic in `deploy/*.sh` was exercised during development against a sandboxed setup with two independent fake targets and stubbed `sudo`/`docker`/`install` — including deliberately tampering with a tracked file and planting an untracked one to confirm `reset --hard` + `clean -fdx` remove both before a build would run, and deliberately requesting one target's allowed branch against the other target to confirm the per-target tables don't leak into each other — but that isn't part of this repo's automated suite. Verify the real path against a real (or throwaway test) host per step 13 above.
+
+Both wizards were driven end-to-end with real input during development, not just unit-tested in isolation: `homelab-deploy-init` actually ran `ssh-keygen` and wrote a `config.yaml` that passed the real `load_config()`; `homelab-deploy-add-target` actually staged a compose file, wrote a `targets.conf` that passed a real bash sourcing check (the same `declare` + `source` sequence `deploy-executor.sh` itself uses), and correctly preserved an unrelated target and a hand-added `ACCOUNT_BRANCH_PATTERNS` line across a second run that updated a different target.
 
 The `umask 007` in `redeploy.sh` (for the shared, multi-account-writable log file — see setup step 8) is standard, well-documented POSIX behavior I'm confident is correct, but I couldn't get a trustworthy empirical check of it in this repo's own development environment: it's Windows/MSYS2 Git Bash, which doesn't faithfully emulate real Linux file-creation permission bits (a quick `umask 007; touch f; stat f` test here came back wrong in a way traceable to that emulation gap, not to the logic). Worth actually checking on the real host after step 8 — e.g. have two different group accounts each `tee -a` a line into the log and confirm both succeed.
 
