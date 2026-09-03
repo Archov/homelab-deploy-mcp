@@ -168,9 +168,15 @@ fi
 # add remote_script or SUDO_USER to env_keep). Falls back to empty if this
 # script is ever run directly as root rather than through sudo (e.g. local
 # testing), which simply skips the restriction below, same as an account
-# with no entry in the table.
+# with no entry in the table. The `-n "$calling_account"` guard matters,
+# not just style: with it empty, `${ACCOUNT_BRANCH_PATTERNS[$calling_account]}`
+# is an empty array subscript, which bash treats as a "bad array
+# subscript" error under `set -u` and aborts the whole script instead of
+# skipping the restriction as intended — confirmed this crashes without
+# the guard before adding it.
 calling_account="${SUDO_USER:-}"
-if [[ -n "${ACCOUNT_BRANCH_PATTERNS[$calling_account]+set}" ]] \
+if [[ -n "$calling_account" ]] \
+  && [[ -n "${ACCOUNT_BRANCH_PATTERNS[$calling_account]+set}" ]] \
   && ! branch_matches_pattern "$branch" "${ACCOUNT_BRANCH_PATTERNS[$calling_account]}"; then
   echo "branch '$branch' is not allowed for account '$calling_account' (target '$target' would otherwise allow it)" >&2
   exit 70
