@@ -1,0 +1,35 @@
+# Install with: sudo install -m 440 -o root -g root sudoers.d/homelab-deploy /etc/sudoers.d/homelab-deploy
+# Always validate with `visudo -cf` before installing — a syntax error in
+# /etc/sudoers.d/ can lock out sudo entirely.
+#
+# This grants everyone in the `homelab-deploy` GROUP — not a specific
+# user — exactly one capability: running /opt/deploy/deploy-executor.sh as
+# root, with any arguments, no password prompt. Authorizing by group
+# rather than by username is what lets you give each agent its own Unix
+# account and SSH key (for a distinct identity in the auth/sudo logs, and
+# so revoking one agent doesn't touch the others) without granting or
+# revoking permissions per account: add an account to this group and it
+# has exactly this capability; remove it and it has none, with nothing
+# here to edit either way.
+#
+# The "any arguments" part is intentionally broad: target/branch names are
+# dynamic, and trying to enumerate every exact (target, branch, env-file)
+# combination here would be unmaintainable as targets or agents are added.
+# The actual enforcement lives inside that script: it independently
+# validates all three arguments against its own hardcoded per-target table
+# before doing anything, and never passes them through a shell (no eval,
+# no bash -c, no string-built commands) — so there's nothing for this
+# wildcard to let through unsafely. This is the standard, documented
+# sudoers pattern for a command that does its own argument validation.
+#
+# No account in this group should also be a member of the `docker` group —
+# that would make this rule pointless, since group membership there alone
+# already grants full daemon control.
+
+# SSH exec_command sessions (what the MCP server uses) have no controlling
+# tty. Some distros default to `Defaults requiretty`, which would make sudo
+# refuse to run at all in that context — this line overrides that for
+# every account in the group.
+Defaults:%homelab-deploy !requiretty
+
+%homelab-deploy ALL=(root) NOPASSWD: /opt/deploy/deploy-executor.sh *

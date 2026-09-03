@@ -36,18 +36,29 @@ async def main() -> None:
                 print(f"  - {tool.name}: {tool.description!r}")
                 print(f"    input_schema: {tool.input_schema}")
 
-            print("\nCalling with a disallowed branch (should fail cleanly):")
+            print("\nCalling with an unconfigured target (should fail cleanly):")
             result = await session.call_tool(
-                "redeploy_media_clip_makarr",
-                {"branch": "totally-not-a-real-branch", "env_file": "prod.env"},
+                "redeploy",
+                {"target": "not-a-real-target", "branch": "main", "env_file": "prod.env"},
             )
             print(f"  is_error={result.is_error} content={result.content}")
 
-            print("\nCalling with an allowed branch (SSH connect will fail since")
+            print("\nCalling with a disallowed branch (should fail cleanly):")
+            result = await session.call_tool(
+                "redeploy",
+                {
+                    "target": "mediaclipmakarr",
+                    "branch": "totally-not-a-real-branch",
+                    "env_file": "prod.env",
+                },
+            )
+            print(f"  is_error={result.is_error} content={result.content}")
+
+            print("\nCalling with an allowed target/branch (SSH connect will fail since")
             print("192.168.1.50 is a placeholder host - that's expected here):")
             result = await session.call_tool(
-                "redeploy_media_clip_makarr",
-                {"branch": "main", "env_file": "prod.env"},
+                "redeploy",
+                {"target": "mediaclipmakarr", "branch": "main", "env_file": "prod.env"},
             )
             print(f"  is_error={result.is_error} content={result.content}")
 

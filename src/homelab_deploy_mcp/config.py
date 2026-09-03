@@ -4,15 +4,29 @@ Kept deliberately strict: every field is required (no silent defaults for
 anything security-relevant), and the allowlists are validated to be
 non-empty so a typo in config.yaml fails loudly at startup rather than
 quietly allowing everything or nothing.
+
+`targets` here is a *client-side* mirror of the allowlists used for fast,
+clear rejection before ever opening an SSH connection. It is not the real
+security boundary — the host-side executor keeps its own independent copy
+of the same table (paths, branches, env files) and is the one that actually
+enforces it. See deploy/deploy-executor.sh.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import re
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+# Lowercase-only: target names double as Docker Compose project names on
+# the host side (see deploy/deploy-executor.sh's --project-name), and
+# Compose project names are lowercase-only. Two target names differing
+# only in case would otherwise be free to collide on the same Compose
+# project identity despite living in separate directories.
+_TARGET_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 
 class ConfigError(ValueError):
@@ -28,11 +42,11 @@ class SshConfig:
     host_key_fingerprint: str
     connect_timeout_seconds: float
     command_timeout_seconds: float
+    remote_script: str
 
 
 @dataclasses.dataclass(frozen=True)
 class DeployTargetConfig:
-    remote_script: str
     allowed_branches: tuple[str, ...]
     allowed_env_files: tuple[str, ...]
 
@@ -40,13 +54,24 @@ class DeployTargetConfig:
 @dataclasses.dataclass(frozen=True)
 class AppConfig:
     ssh: SshConfig
-    mediaclipmakarr: DeployTargetConfig
+    targets: dict[str, DeployTargetConfig]
 
 
 def _require(mapping: dict[str, Any], key: str, section: str) -> Any:
     value = mapping.get(key)
     if value in (None, ""):
         raise ConfigError(f"Missing required config key: {section}.{key}")
+    return value
+
+
+def _require_str(mapping: dict[str, Any], key: str, section: str) -> str:
+    value = _require(mapping, key, section)
+    if not isinstance(value, str):
+        raise ConfigError(
+            f"{section}.{key} must be a string, got {type(value).__name__} "
+            f"({value!r}) — a YAML list or mapping here would otherwise pass "
+            "loading and fail later with a much less clear error"
+        )
     return value
 
 
@@ -74,11 +99,11 @@ def load_config(config_path: Path) -> AppConfig:
     if not isinstance(ssh_raw, dict):
         raise ConfigError("ssh must be a mapping")
 
-    target_raw = _require(raw, "mediaclipmakarr", "<root>")
-    if not isinstance(target_raw, dict):
-        raise ConfigError("mediaclipmakarr must be a mapping")
+    targets_raw = _require(raw, "targets", "<root>")
+    if not isinstance(targets_raw, dict):
+        raise ConfigError("targets must be a mapping of target name -> target config")
 
-    key_path = Path(_require(ssh_raw, "key_path", "ssh")).expanduser()
+    key_path = Path(_require_str(ssh_raw, "key_path", "ssh")).expanduser()
     if not key_path.is_file():
         raise ConfigError(f"SSH key not found at {key_path} (ssh.key_path)")
 
@@ -91,19 +116,32 @@ def load_config(config_path: Path) -> AppConfig:
         )
 
     ssh = SshConfig(
-        host=_require(ssh_raw, "host", "ssh"),
+        host=_require_str(ssh_raw, "host", "ssh"),
         port=int(ssh_raw.get("port", 22)),
-        user=_require(ssh_raw, "user", "ssh"),
+        user=_require_str(ssh_raw, "user", "ssh"),
         key_path=key_path,
         host_key_fingerprint=fingerprint,
         connect_timeout_seconds=float(ssh_raw.get("connect_timeout_seconds", 15)),
         command_timeout_seconds=float(ssh_raw.get("command_timeout_seconds", 600)),
+        remote_script=_require_str(ssh_raw, "remote_script", "ssh"),
     )
 
-    target = DeployTargetConfig(
-        remote_script=_require(target_raw, "remote_script", "mediaclipmakarr"),
-        allowed_branches=_require_list(target_raw, "allowed_branches", "mediaclipmakarr"),
-        allowed_env_files=_require_list(target_raw, "allowed_env_files", "mediaclipmakarr"),
-    )
+    if not targets_raw:
+        raise ConfigError("targets must define at least one target")
 
-    return AppConfig(ssh=ssh, mediaclipmakarr=target)
+    targets: dict[str, DeployTargetConfig] = {}
+    for name, target_raw in targets_raw.items():
+        if not isinstance(name, str) or not _TARGET_NAME_RE.match(name):
+            raise ConfigError(
+                f"invalid target name {name!r} — target names must match "
+                f"{_TARGET_NAME_RE.pattern} (this is also what the host-side "
+                "executor expects as a lookup key)"
+            )
+        if not isinstance(target_raw, dict):
+            raise ConfigError(f"targets.{name} must be a mapping")
+        targets[name] = DeployTargetConfig(
+            allowed_branches=_require_list(target_raw, "allowed_branches", f"targets.{name}"),
+            allowed_env_files=_require_list(target_raw, "allowed_env_files", f"targets.{name}"),
+        )
+
+    return AppConfig(ssh=ssh, targets=targets)
