@@ -40,6 +40,12 @@ def _generate_key(key_path: Path) -> None:
             "or generate the key yourself and re-run this wizard."
         )
         return  # unreachable, die() raises; keeps type-checkers happy
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+    # List-form argv, not shell=True and not a shell string -- no shell
+    # interpretation happens here regardless of what key_path contains, so
+    # there's nothing to escape or quote. The rule appears to flag any
+    # subprocess call with a non-literal argument without distinguishing
+    # safe argv-list calls from actual shell-string calls.
     subprocess.run(
         [
             ssh_keygen,

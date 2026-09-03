@@ -147,6 +147,11 @@ def _validate_with_bash(path: Path) -> None:
         "declare -A ALLOWED_ENV_FILES=(); declare -A ACCOUNT_BRANCH_PATTERNS=(); "
         f"source {shlex.quote(path.as_posix())}"
     )
+    # nosemgrep: python.lang.security.audit.dangerous-subprocess-use-audit
+    # List-form argv, not shell=True -- bash only ever sees `script` as a
+    # single -c argument, never re-parsed by an outer shell. The only
+    # dynamic piece inside `script` is the path above, and it's already
+    # shlex.quote()'d for safe interpolation into that inner bash command.
     result = subprocess.run([bash, "-c", script], capture_output=True, text=True)
     if result.returncode != 0:
         print("WARNING: generated targets.conf failed a bash sourcing check:")
