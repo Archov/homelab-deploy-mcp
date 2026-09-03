@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 #
 # Installed on the homelab host at /opt/deploy/deploy-executor.sh, owned by
-# root:root, mode 700 — the shared homelab-deploy account has NO direct
-# read/write/execute access to this file. It only ever reaches it through
-# the sudo rule in sudoers.d/homelab-deploy, which grants that with any
-# arguments and relies entirely on THIS script to validate them.
+# root:root, mode 700 — no account, regardless of homelab-deploy group
+# membership, has any direct read/write/execute access to this file. It's
+# only ever reached through the sudo rule in sudoers.d/homelab-deploy,
+# which grants that to the whole group with any arguments and relies
+# entirely on THIS script to validate them.
 #
 # This is the ONE place all privileged work happens, for EVERY configured
-# target: git operations against that target's checkout, and the docker
-# compose build/up. homelab-deploy owns none of the directories below and
-# cannot write to any of them, so even a full compromise of that account —
-# or of redeploy.sh, the forced-command script it invokes this through —
-# cannot plant a file in a build context, read an env file's contents, or
-# touch one target's files by asking for another.
+# target and EVERY agent's account: git operations against that target's
+# checkout, and the docker compose build/up. No homelab-deploy-group
+# account owns any of the directories below or can write to any of them,
+# so even a full compromise of one agent's account — or of redeploy.sh,
+# the forced-command script it invokes this through — cannot plant a file
+# in a build context, read an env file's contents, or touch one target's
+# files by asking for another.
 #
 # No eval, no bash -c, no string-built shell commands: every external
 # command below is invoked with its arguments as separate argv entries, not

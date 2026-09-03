@@ -5,7 +5,7 @@ A narrow, whitelisted [MCP](https://modelcontextprotocol.io) server that lets an
 It exposes exactly one tool, `redeploy(target, branch, env_file)`, which:
 
 1. Validates `target`, `branch`, and `env_file` against an allowlist in `config.yaml`.
-2. Opens a single SSH connection to your homelab host, pinned to a known host key fingerprint, using one shared account and key.
+2. Opens a single SSH connection to your homelab host, pinned to a known host key fingerprint, using whichever account and key belong to the calling agent — each agent gets its own, all of them members of one shared `homelab-deploy` group.
 3. Runs a forced command on that host (`redeploy.sh`) — a thin, root-owned script that checks the arguments are at least well-formed, then hands off via `sudo` to a second root-owned script (`deploy-executor.sh`) that owns the real per-target table (paths, allowed branches, allowed env files) and does everything privileged: re-validates all three arguments against *that specific target's* configuration, resets *that target's* root-owned git checkout to exactly the requested branch's latest commit (removing any untracked or ignored files first), activates *that target's* requested pre-approved env file, and runs `docker compose up -d --force-recreate --build` against *that target's* own compose file.
 4. Closes the connection and returns stdout/stderr/exit code.
 
@@ -13,17 +13,17 @@ It exposes exactly one tool, `redeploy(target, branch, env_file)`, which:
 
 ## The threat model this is (and isn't) built for
 
-This is a CYA measure against an agent going off-script — accidentally redeploying the wrong thing, running an unreviewed branch, or fat-fingering a docker invocation into something destructive — not a defense against a sophisticated attacker who already has your SSH private key. In that spirit it deliberately shares **one** SSH account and key across every configured target, rather than provisioning a separate account per project. The tradeoff that buys: far less to set up per new target (no new Unix account, no new key, no new sudoers/authorized_keys entry), at the cost of one property a fully-isolated-per-project design would have — if the shared key itself is ever compromised, that compromise reaches every configured target, not just one. It still doesn't reach anything *un*configured: the executor's per-target table is the only thing that says what's redeployable at all, and it's root-owned and untouched by the branch, the MCP request, or the shared account itself.
+This is a CYA measure against an agent going off-script — accidentally redeploying the wrong thing, running an unreviewed branch, or fat-fingering a docker invocation into something destructive — not a defense against a sophisticated attacker who already has an SSH private key. In that spirit, every account with any access here has *exactly* the same, narrow set of capabilities: run one root-owned executor with any arguments (which independently re-validates them against its own per-target table), nothing else. There is nothing to configure per account beyond adding it to the `homelab-deploy` group.
 
-If that tradeoff stops being the right one for you — e.g. one target starts holding something you'd treat differently from the others — that's the point at which per-target accounts/keys are worth the extra setup; nothing here prevents layering that in later per target.
+Within that, though, **every agent still gets its own Unix account and SSH key** — Claude gets one, Codex gets another, and so on — rather than everyone sharing a single identity. Since permissions come from group membership and not from anything tied to a specific account, this costs nothing extra to set up (see "Adding an agent" below) and buys two things a single shared account wouldn't: each agent's actions are individually attributable in the SSH and sudo logs, and revoking one agent's access (delete its key, or remove it from the group) doesn't touch any other agent's. What it doesn't do is isolate agents from *targets* — every account in the group can request a redeploy of every configured target; the host-side executor's table has no notion of *which* group member is asking, only whether the target/branch/env-file combination is valid at all. A narrower `config.yaml` (giving one agent a smaller `targets:` map than another) makes that agent's *own* MCP server refuse to attempt the rest — a real, useful default-deny for a well-behaved caller — but it's enforced client-side, in Python, not by the host. Anything with direct access to that agent's private key could SSH in and ask `redeploy.sh` for any target in the shared group's reach, same as any other member. If per-agent target restriction needs to be a hard boundary rather than a convenience, that's a case for per-agent accounts *outside* this shared group (with their own, separately-scoped sudoers rule and executor), not something this design provides today.
 
 ## Why it's built this way
 
 - **Reuses SSH, adds no new listener.** This server runs as a local subprocess on *your* machine (wherever you run Claude Code / Codex), not on the homelab, and connects out over SSH when a tool is called. To be precise about what this does and doesn't buy you: your homelab **does** need SSH reachable from wherever this runs — that's not optional. What this design avoids is adding a *new*, bespoke inbound service or port on top of whatever SSH access you already have for administering the box.
 - **Two independently-enforced checks, plus a syntax layer.** `config.yaml` (Python, client-side) rejects obviously-wrong requests before ever opening a connection, for fast feedback — but it's a mirror, not the enforcement. `redeploy.sh` (the forced-command script) checks the three arguments are syntactically sane before forwarding them, but deliberately does *not* keep its own copy of which targets/branches/env-files are actually allowed — that table exists in exactly one authoritative place: `deploy-executor.sh`, which independently re-validates all three against it before doing anything. A bug or bypass anywhere upstream of the executor still leaves that check in place.
-- **No `docker` group membership.** Adding the deploy account to the `docker` group would be root-equivalent — anyone with docker-group access can do `docker run --privileged -v /:/host ... chroot /host`, no compose file involved. Instead, `homelab-deploy` has no meaningful filesystem access at all beyond executing its one forced-command script; the moment anything needs to touch docker or git, it happens inside the root-owned executor via a `sudo` rule pinned to that one script.
-- **The deploy account cannot write to any target's git checkout.** Every target lives under `/opt/targets/<name>/`, owned by root; `homelab-deploy` has no access to any of it. Only the root-owned executor ever touches it — and it doesn't trust whatever state a checkout happens to be in: every run does `git fetch`, resolves `refs/remotes/origin/<branch>` fresh, `git reset --hard`s to exactly that commit, and then `git clean -fdx`s. That last step matters more than it looks: `reset --hard` alone does *not* remove untracked files, so without an explicit clean, a file planted in that directory by any other means would survive a reset and still get pulled into the image by a Dockerfile's `COPY .` — never having gone through the branch allowlist at all. `-x` also removes gitignored files, since a Dockerfile's `.dockerignore` is independent of `.gitignore`.
-- **Compose and env files live on the host, never in a branch.** Each target's `docker-compose.yml` lives at `/opt/targets/<name>/docker-compose.yml`, owned by root, installed once by a human — the deploy pipeline only ever reads it, never writes it, and it's never sourced from that target's git checkout. The one field in it that *does* point at the checkout is `build.context`, which is the actual "deploy this branch's code" mechanism. Env file contents work the same way: `homelab-deploy` can't even read any target's `envfiles/*.env` (root-only, mode 600) — only the root-owned executor copies a pre-approved one into place as that target's `active.env`, outside the build context entirely, so a `docker build` never sees it.
+- **No `docker` group membership, for any account.** Adding an account to the `docker` group would be root-equivalent — anyone with docker-group access can do `docker run --privileged -v /:/host ... chroot /host`, no compose file involved. Instead, no account in the `homelab-deploy` group has any meaningful filesystem access beyond executing the one forced-command script; the moment anything needs to touch docker or git, it happens inside the root-owned executor via a `sudo` rule pinned to that one script and granted to the group.
+- **No account in the group can write to any target's git checkout.** Every target lives under `/opt/targets/<name>/`, owned by root; the group has no access to any of it, regardless of which member is asking. Only the root-owned executor ever touches it — and it doesn't trust whatever state a checkout happens to be in: every run does `git fetch`, resolves `refs/remotes/origin/<branch>` fresh, `git reset --hard`s to exactly that commit, and then `git clean -fdx`s. That last step matters more than it looks: `reset --hard` alone does *not* remove untracked files, so without an explicit clean, a file planted in that directory by any other means would survive a reset and still get pulled into the image by a Dockerfile's `COPY .` — never having gone through the branch allowlist at all. `-x` also removes gitignored files, since a Dockerfile's `.dockerignore` is independent of `.gitignore`.
+- **Compose and env files live on the host, never in a branch.** Each target's `docker-compose.yml` lives at `/opt/targets/<name>/docker-compose.yml`, owned by root, installed once by a human — the deploy pipeline only ever reads it, never writes it, and it's never sourced from that target's git checkout. The one field in it that *does* point at the checkout is `build.context`, which is the actual "deploy this branch's code" mechanism. Env file contents work the same way: no group member can even read any target's `envfiles/*.env` (root-only, mode 600) — only the root-owned executor copies a pre-approved one into place as that target's `active.env`, outside the build context entirely, so a `docker build` never sees it.
 - **Targets can't be confused with each other.** The executor looks up `TARGET_DIR`, `ALLOWED_BRANCHES`, and `ALLOWED_ENV_FILES` by the requested target name — a branch or env file allowed for one target is checked *only* against that target's own entry, never against another's. I verified this empirically with two sandboxed targets: a branch valid for one was correctly rejected when requested against the other, and a file planted in one target's checkout never appeared in the other's.
 - **Nothing here ever builds a shell command out of these values.** No `eval`, no `bash -c` fed with request data, no string-interpolated commands. Every git/docker/install invocation takes `target`/`branch`/`env_file` as plain argv entries. Combined with an exact-match allowlist (not just a regex) as the real gate, there's no injection surface even where `sudo` itself is configured permissively (see the executor's own comments on why its `sudo` rule allows any arguments).
 - **Host key pinning.** The SSH client here doesn't use `known_hosts` or trust-on-first-use — it compares the presented host key's SHA256 fingerprint against the value you pin in `config.yaml` and aborts before running anything if it doesn't match.
@@ -38,57 +38,75 @@ One honest caveat worth sitting with even after all of the above: this design co
 
 ## Setup
 
-### 1. Create the shared, restricted user on the homelab host
+### 1. Create the permission-bearing group
 
 ```bash
-sudo useradd --system --create-home --shell /bin/bash homelab-deploy
+sudo groupadd --system homelab-deploy
 ```
 
-One account, shared across every target you configure — see "The threat model this is (and isn't) built for" above. **Do not** add this account to the `docker` group.
+This group, not any individual account, is what `sudoers` and the filesystem permissions below actually grant access to. **Do not** add it (or any account in it) to the `docker` group.
 
-### 2. Generate a dedicated SSH key pair (on the machine that will run this MCP server)
+### 2. Create one Unix account per agent, each in that group
+
+Repeat this for every agent you want to give access — Claude Code, Codex, whatever else:
 
 ```bash
-ssh-keygen -t ed25519 -f ~/.ssh/homelab_deploy_ed25519 -N "" -C "homelab-deploy-mcp"
+agent=claude   # change per agent: claude, codex, ...
+
+sudo useradd --system --create-home --shell /bin/bash --groups homelab-deploy "homelab-deploy-$agent"
 ```
 
-### 3. Install both scripts, root-owned
+Each account keeps its own default primary group (however your distro handles that) — `homelab-deploy` is a *supplementary* group here, which is all that's needed for the `sudoers`/file-permission rules below to apply.
 
-`homelab-deploy` must not be able to write to either of these — if it could edit `redeploy.sh`, it could rewrite what the key does; the executor is root-only and unreadable by the account entirely.
+### 3. Generate a dedicated SSH key pair per agent
+
+Also on the machine that will run each agent's own copy of this MCP server:
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/homelab_deploy_claude_ed25519 -N "" -C "homelab-deploy-mcp (claude)"
+```
+
+One key per agent — never share a private key between two agents. If two agents happen to run on the same machine, that's still two separate keypairs, one per agent's own config.
+
+### 4. Install both scripts, group-readable, owned by root
+
+No account should be able to write to either of these — if one could edit `redeploy.sh`, whoever controls that account could rewrite what every key in the group does; the executor is root-only and unreadable by the group entirely.
 
 ```bash
 sudo mkdir -p /opt/deploy /opt/targets
+sudo chgrp homelab-deploy /opt/deploy
+sudo chmod 750 /opt/deploy
 
 sudo cp deploy/redeploy.sh /opt/deploy/redeploy.sh
-sudo chown root:root /opt/deploy/redeploy.sh
-sudo chmod 755 /opt/deploy/redeploy.sh
+sudo chown root:homelab-deploy /opt/deploy/redeploy.sh
+sudo chmod 750 /opt/deploy/redeploy.sh   # group can read+execute; nobody outside it can even see it
 
 sudo cp deploy/deploy-executor.sh /opt/deploy/deploy-executor.sh
 sudo chown root:root /opt/deploy/deploy-executor.sh
-sudo chmod 700 /opt/deploy/deploy-executor.sh
+sudo chmod 700 /opt/deploy/deploy-executor.sh   # root-only; reached only via sudo, regardless of caller
 ```
 
 Before or after copying it, edit `deploy-executor.sh`'s three associative arrays (`TARGET_DIR`, `ALLOWED_BRANCHES`, `ALLOWED_ENV_FILES`) to list your real targets — see "Adding a target" below.
 
-### 4. Lock the SSH key to the forced command
+### 5. Lock each agent's SSH key to the forced command
 
-As the `homelab-deploy` user, set up `~/.ssh/authorized_keys`:
-
-```
-restrict,command="/opt/deploy/redeploy.sh" ssh-ed25519 AAAA...your-public-key... homelab-deploy-mcp
-```
-
-`restrict` (OpenSSH 7.2+) disables port/X11/agent forwarding, pty allocation, and `~/.ssh/rc` execution all at once, and — unlike listing those individually — automatically covers anything OpenSSH adds to that list in later versions. `command=` means SSH always runs that script for this key, no matter what the client asks to run — the client's actual request lands in `$SSH_ORIGINAL_COMMAND` for the script to parse.
-
-If the machine running this MCP server has a stable address (a fixed LAN IP, or a Tailscale/VPN address), add `from=` to reject the key from anywhere else, even with the private key in hand:
+As each `homelab-deploy-<agent>` user, set up `~/.ssh/authorized_keys` with that agent's own public key:
 
 ```
-restrict,command="/opt/deploy/redeploy.sh",from="192.168.1.0/24" ssh-ed25519 AAAA... homelab-deploy-mcp
+restrict,command="/opt/deploy/redeploy.sh" ssh-ed25519 AAAA...claude's-public-key... homelab-deploy-mcp-claude
+```
+
+`restrict` (OpenSSH 7.2+) disables port/X11/agent forwarding, pty allocation, and `~/.ssh/rc` execution all at once, and — unlike listing those individually — automatically covers anything OpenSSH adds to that list in later versions. `command=` means SSH always runs that script for this key, no matter what the client asks to run — the client's actual request lands in `$SSH_ORIGINAL_COMMAND` for the script to parse. Every agent's key gets the exact same `command=` — what varies per agent is only the account and key, never the forced command itself.
+
+If the machine running a given agent has a stable address (a fixed LAN IP, or a Tailscale/VPN address), add `from=` to that agent's line to reject its key from anywhere else, even with the private key in hand:
+
+```
+restrict,command="/opt/deploy/redeploy.sh",from="192.168.1.0/24" ssh-ed25519 AAAA... homelab-deploy-mcp-claude
 ```
 
 Skip `from=` if that machine's address isn't stable — a wrong or stale value here just breaks the connection, it doesn't fail open.
 
-### 5. Set up each target
+### 6. Set up each target
 
 Repeat this per project. Everything here is owned by `root`, not by `homelab-deploy`:
 
@@ -112,30 +130,34 @@ sudo chmod 644 "/opt/targets/$target/docker-compose.yml"
 sudo cp /path/to/your/prod.env "/opt/targets/$target/envfiles/prod.env"
 sudo chown -R root:root "/opt/targets/$target"
 sudo chmod 600 "/opt/targets/$target"/envfiles/*.env
-# homelab-deploy gets no access to any of this — only the root-owned
-# executor ever reads it.
+# No account in the homelab-deploy group gets any access to this — only
+# the root-owned executor ever reads it.
 ```
 
-### 6. Install the sudoers rule
+### 7. Install the sudoers rule
 
 ```bash
 sudo visudo -cf deploy/sudoers.d/homelab-deploy   # validate syntax first
 sudo install -m 440 -o root -g root deploy/sudoers.d/homelab-deploy /etc/sudoers.d/homelab-deploy
 ```
 
-Always validate with `visudo -cf` before installing anything into `/etc/sudoers.d/` — a syntax error there can break `sudo` for the whole system. This rule doesn't need touching when you add a target later — it grants the executor with any arguments and relies on the executor's own table (see the sudoers file's own comments for why that's safe here).
+Always validate with `visudo -cf` before installing anything into `/etc/sudoers.d/` — a syntax error there can break `sudo` for the whole system. This rule grants the *group* (`%homelab-deploy`), not any specific account, so it doesn't need touching when you add a target, or an agent, later.
 
-Confirm it: as `homelab-deploy`, `sudo -l` should show exactly one allowed command (the executor, with any arguments), running `sudo /opt/deploy/deploy-executor.sh mediaclipmakarr main prod.env` (or whatever you configured) should work without a password prompt, and `sudo docker ps` (or anything not that exact script) should be refused.
+Confirm it: as any `homelab-deploy-<agent>` account, `sudo -l` should show exactly one allowed command (the executor, with any arguments), running `sudo /opt/deploy/deploy-executor.sh mediaclipmakarr main prod.env` (or whatever you configured) should work without a password prompt, and `sudo docker ps` (or anything not that exact script) should be refused.
 
-### 7. Create the log location
+### 8. Create the log location
+
+Every agent's account writes to the same log file, so this needs to be genuinely group-writable, not owned by one account:
 
 ```bash
 sudo mkdir -p /var/log/homelab-deploy
-sudo chown homelab-deploy:homelab-deploy /var/log/homelab-deploy
-sudo chmod 750 /var/log/homelab-deploy
+sudo chown root:homelab-deploy /var/log/homelab-deploy
+sudo chmod 2770 /var/log/homelab-deploy
 ```
 
-### 8. Get the host key fingerprint
+The `2` sets the setgid bit on the directory, so any log file created inside it inherits the `homelab-deploy` group regardless of which agent's account creates it first — without that, only the account that happened to create the file first would necessarily be able to write to it again later. `redeploy.sh` also sets `umask 007` before creating anything, so the file itself comes out group-writable too (a setgid directory alone fixes the *group*, not the *permission bits*, on a newly created file).
+
+### 9. Get the host key fingerprint
 
 From the homelab host itself (or any connection you already trust — don't take this from the client side):
 
@@ -143,7 +165,11 @@ From the homelab host itself (or any connection you already trust — don't take
 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
 ```
 
-### 9. Install this package
+This is the same for every agent — it's a property of the host, not the connecting account.
+
+### 10. Install this package
+
+Once per agent, since each agent runs its own copy of this MCP server:
 
 ```bash
 python -m venv .venv
@@ -151,17 +177,19 @@ source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install -e .
 ```
 
-### 10. Configure
+(If several agents run on the same machine, they can share one `.venv` and installed package — it's the `config.yaml` each points at, below, that actually differs per agent.)
+
+### 11. Configure — one `config.yaml` per agent
 
 ```bash
-cp config.example.yaml config.yaml
+cp config.example.yaml config-claude.yaml   # one file per agent; name them however you like
 ```
 
-Fill in `config.yaml`: your host, the `homelab-deploy` user, the private key path from step 2, `ssh.remote_script` (`/opt/deploy/redeploy.sh`), the fingerprint from step 8, and a `targets:` entry for each project — matching what you put in `deploy-executor.sh`'s tables in step 3.
+Fill in each agent's own copy: your host, *that agent's* `homelab-deploy-<agent>` user and private key path from steps 2–3, `ssh.remote_script` (`/opt/deploy/redeploy.sh` — same for every agent), the fingerprint from step 9 (same for every agent), and a `targets:` entry for each project you want that agent able to reach — matching what you put in `deploy-executor.sh`'s tables in step 4. Give two agents different `targets:` maps if you want one of them restricted to fewer projects (see the caveat on that in "The threat model..." above).
 
-`config.yaml` is gitignored — never commit it.
+Keep each of these gitignored — never commit them.
 
-### 11. Register it with your MCP client
+### 12. Register each agent's config with its MCP client
 
 For Claude Code, add to `.mcp.json` (or your global MCP config):
 
@@ -172,23 +200,23 @@ For Claude Code, add to `.mcp.json` (or your global MCP config):
       "command": "/absolute/path/to/homelab-deploy-mcp/.venv/bin/python",
       "args": ["-m", "homelab_deploy_mcp.server"],
       "env": {
-        "HOMELAB_DEPLOY_MCP_CONFIG": "/absolute/path/to/homelab-deploy-mcp/config.yaml"
+        "HOMELAB_DEPLOY_MCP_CONFIG": "/absolute/path/to/homelab-deploy-mcp/config-claude.yaml"
       }
     }
   }
 }
 ```
 
-Adjust the python path for Windows (`...\\.venv\\Scripts\\python.exe`) if applicable. Restart your MCP client after adding this.
+Adjust the python path for Windows (`...\\.venv\\Scripts\\python.exe`) if applicable, and point `HOMELAB_DEPLOY_MCP_CONFIG` at that agent's own config file. Restart the MCP client after adding this.
 
-### 12. Test it
+### 13. Test it
 
-Ask your agent to call `redeploy` with a target/branch/env file from your allowlist, and check `/var/log/homelab-deploy/deploy.log` on the homelab host to confirm it ran.
+Ask the agent to call `redeploy` with a target/branch/env file from its allowlist, and check `/var/log/homelab-deploy/deploy.log` on the homelab host to confirm it ran (and which account it ran as).
 
 You can also test the SSH path directly, bypassing MCP entirely:
 
 ```bash
-ssh -i ~/.ssh/homelab_deploy_ed25519 homelab-deploy@your-homelab-host \
+ssh -i ~/.ssh/homelab_deploy_claude_ed25519 homelab-deploy-claude@your-homelab-host \
   /opt/deploy/redeploy.sh deploy mediaclipmakarr main prod.env
 ```
 
@@ -196,11 +224,22 @@ ssh -i ~/.ssh/homelab_deploy_ed25519 homelab-deploy@your-homelab-host \
 
 This is the whole point of the multi-target design — it should be small:
 
-1. `config.yaml`: add an entry under `targets:` with that project's `allowed_branches`/`allowed_env_files`.
+1. `config.yaml` (each agent's copy that should be able to reach it): add an entry under `targets:` with that project's `allowed_branches`/`allowed_env_files`.
 2. `deploy-executor.sh` on the homelab host: add one line to each of `TARGET_DIR`, `ALLOWED_BRANCHES`, `ALLOWED_ENV_FILES`.
-3. On the host: `sudo mkdir -p /opt/targets/<name>/envfiles`, clone the repo to `/opt/targets/<name>/repo`, install a `docker-compose.yml` there, and drop in the pre-approved env files — same as step 5 above.
+3. On the host: `sudo mkdir -p /opt/targets/<name>/envfiles`, clone the repo to `/opt/targets/<name>/repo`, install a `docker-compose.yml` there, and drop in the pre-approved env files — same as step 6 above.
 
-Nothing else. The shared account, key, `authorized_keys` entry, and sudoers rule already cover it.
+Nothing else. The group, its accounts and keys, and the sudoers rule already cover it.
+
+## Adding an agent
+
+Also small, and doesn't touch anything target-related:
+
+1. Create the account and add it to the group: `sudo useradd --system --create-home --shell /bin/bash --groups homelab-deploy homelab-deploy-<agent>` (step 2 above).
+2. Generate that agent's own key pair (step 3 above).
+3. Add that key to the new account's `~/.ssh/authorized_keys` with the same `restrict,command="/opt/deploy/redeploy.sh"` clause every other agent uses (step 5 above).
+4. Give it its own `config.yaml` pointing at its own account/key (step 11 above), and register that with the agent's MCP client (step 12 above).
+
+Nothing on the homelab host's privileged side — `redeploy.sh`, `deploy-executor.sh`, the sudoers rule — needs to change. That's the entire benefit of authorizing by group membership instead of by username.
 
 ## Development
 
@@ -209,4 +248,6 @@ pip install -e ".[dev]"
 pytest
 ```
 
-Tests cover config validation (including the multi-target schema) and the host-key fingerprint helper — both pure logic, no network. There's no automated test for the actual SSH/git/docker path; the logic in `deploy/*.sh` was exercised during development against a sandboxed setup with two independent fake targets and stubbed `sudo`/`docker`/`install` — including deliberately tampering with a tracked file and planting an untracked one to confirm `reset --hard` + `clean -fdx` remove both before a build would run, and deliberately requesting one target's allowed branch against the other target to confirm the per-target tables don't leak into each other — but that isn't part of this repo's automated suite. Verify the real path against a real (or throwaway test) host per step 12 above.
+Tests cover config validation (including the multi-target schema) and the host-key fingerprint helper — both pure logic, no network. There's no automated test for the actual SSH/git/docker path; the logic in `deploy/*.sh` was exercised during development against a sandboxed setup with two independent fake targets and stubbed `sudo`/`docker`/`install` — including deliberately tampering with a tracked file and planting an untracked one to confirm `reset --hard` + `clean -fdx` remove both before a build would run, and deliberately requesting one target's allowed branch against the other target to confirm the per-target tables don't leak into each other — but that isn't part of this repo's automated suite. Verify the real path against a real (or throwaway test) host per step 13 above.
+
+The `umask 007` in `redeploy.sh` (for the shared, multi-account-writable log file — see setup step 8) is standard, well-documented POSIX behavior I'm confident is correct, but I couldn't get a trustworthy empirical check of it in this repo's own development environment: it's Windows/MSYS2 Git Bash, which doesn't faithfully emulate real Linux file-creation permission bits (a quick `umask 007; touch f; stat f` test here came back wrong in a way traceable to that emulation gap, not to the logic). Worth actually checking on the real host after step 8 — e.g. have two different group accounts each `tee -a` a line into the log and confirm both succeed.
