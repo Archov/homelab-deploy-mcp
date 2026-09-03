@@ -5,8 +5,13 @@
 ssh:
   host: "192.168.1.50" # your homelab server's IP or hostname
   port: 22
-  user: "homelab-deploy" # a single dedicated, restricted account shared by all targets
-  key_path: "~/.ssh/homelab_deploy_ed25519"
+  # Each agent gets its own Unix account (homelab-deploy-<agent>) and its
+  # own key — homelab-deploy itself is only ever a group, never an
+  # account you can SSH in as. Set these two to the account/key
+  # belonging to THIS config's agent; see the README's "Setup" and
+  # "Adding an agent" sections.
+  user: "homelab-deploy-claude" # must match that agent's Unix account
+  key_path: "~/.ssh/homelab_deploy_claude_ed25519"
   # Pin the host key so a changed/spoofed host key is refused rather than
   # silently trusted. Get this from the homelab server itself, not from the
   # client, and verify it out-of-band (e.g. by running this over a

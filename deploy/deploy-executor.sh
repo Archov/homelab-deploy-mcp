@@ -19,6 +19,11 @@
 # No eval, no bash -c, no string-built shell commands: every external
 # command below is invoked with its arguments as separate argv entries, not
 # interpolated into a command string a shell re-parses.
+#
+# Each target's fetch/reset/clean/env/compose sequence is serialized with a
+# non-blocking flock on a per-target lock file, so two concurrent deploys
+# of the same target can't interleave their git or docker operations —
+# see the comment further down, right before it's acquired.
 set -euo pipefail
 
 # --- per-target configuration (host-side, authoritative) -------------------
@@ -101,6 +106,23 @@ repo_dir="$base_dir/repo"
 compose_file="$base_dir/docker-compose.yml"
 env_dir="$base_dir/envfiles"
 active_env="$base_dir/active.env"
+lock_file="$base_dir/.deploy.lock"
+
+# Serialize the whole fetch/reset/clean/env/compose sequence per target.
+# Without this, two concurrent deploys of the SAME target (two agents, or
+# one agent firing twice) could interleave: one's `reset --hard` landing
+# between the other's `clean` and `install`, or its docker build running
+# against the wrong branch or env file entirely. Non-blocking on purpose —
+# fail the second request immediately with a clear reason rather than
+# have it sit waiting and possibly hit the caller's own SSH timeout with
+# no explanation. The lock is tied to this open file descriptor, which
+# `exec` below inherits, so it stays held through the docker compose
+# command too, not just up to that point in the script.
+exec 200>"$lock_file"
+if ! flock -n 200; then
+  echo "a deploy for target '$target' is already in progress" >&2
+  exit 69
+fi
 
 cd "$repo_dir"
 git fetch origin
